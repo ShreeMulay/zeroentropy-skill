@@ -1,0 +1,280 @@
+---
+name: zeroentropy
+description: ZeroEntropy integration for AI agents — embeddings (zembed-1), reranking (zerank-2), and end-to-end search (zsearch). Provides recipes for indexing documents, querying with metadata filters, and building production RAG pipelines.
+license: MIT
+compatibility: opencode, claude-code, cursor, copilot, goose, codex
+metadata:
+  category: data
+  domain: search
+  tools: zeroentropy, zembed, zerank, zsearch
+  version: "1.0.0"
+---
+
+> ZeroEntropy Skill v1.0.0 — API: v1 — Last verified: 2025-05-19
+
+# ZeroEntropy Agent Skill
+
+## Quick Routing
+
+- **Embedding text?** → [§1 Embedding (zembed-1)](#1-embedding-zembed-1)
+- **Reranking candidates?** → [§2 Reranking (zerank-2)](#2-reranking-zerank-2)
+- **Indexing or searching documents?** → [§3 Indexing & Search (zsearch)](#3-indexing--search-zsearch)
+- **Building a full RAG pipeline?** → [§4 RAG Pipeline Recipe](#4-rag-pipeline-recipe)
+- **Debugging silent failures?** → [§5 ⚠️ Pitfalls](#5-pitfalls)
+
+## Setup
+
+1. Install the official SDK:
+   - Python: `pip install zeroentropy`
+   - Node: `npm install zeroentropy`
+2. Set your API key: `export ZEROENTROPY_API_KEY="your_key"`
+3. (Optional) Use EU endpoints: set `base_url` to `https://eu-api.zeroentropy.dev/v1`
+
+## 1. Embedding (zembed-1)
+
+Use `zembed-1` to generate dense vector representations for queries or documents.
+
+### Key Parameters
+- `model`: `"zembed-1"`
+- `input_type`: `"query"` or `"document"` (asymmetrical retrieval)
+- `dimensions`: `2560` (default), `1280`, `640`, `320`, `160`, `80`, `40`
+- `encoding_format`: `"float"` (default) or `"base64"` (more efficient)
+- `latency`: `"fast"` (subsecond, lower quota) or `"slow"` (higher quota, 2–20s)
+
+### Python Example
+```python
+from zeroentropy import ZeroEntropy
+zclient = ZeroEntropy()
+
+response = zclient.models.embed(
+    model="zembed-1",
+    input_type="query",
+    input="What is retrieval augmented generation?",
+    dimensions=2560,
+    encoding_format="float",
+    latency="fast",
+)
+# response.results[0].embedding is a List[float]
+```
+
+### TypeScript Example
+```typescript
+import { ZeroEntropy } from 'zeroentropy';
+const zclient = new ZeroEntropy();
+
+const response = await zclient.models.embed({
+    model: "zembed-1",
+    input_type: "query",
+    input: "What is retrieval augmented generation?",
+    dimensions: 2560,
+    encoding_format: "float",
+    latency: "fast",
+});
+// response.results[0].embedding is number[]
+```
+
+### Best Practices
+- Use `base64` encoding for large batches to reduce payload size.
+- Match `dimensions` between indexing and querying or retrieval quality degrades silently.
+- Use `"document"` input_type for corpus chunks and `"query"` for user questions.
+
+## 2. Reranking (zerank-2)
+
+Use `zerank-2` to reorder a candidate set of documents by semantic relevance to a query.
+
+### Key Parameters
+- `model`: `"zerank-2"` (flagship), `"zerank-1"`, or `"zerank-1-small"`
+- `query`: the user question
+- `documents`: array of candidate strings
+- `top_n`: (optional) return only top N results
+
+### Python Example
+```python
+response = zclient.models.rerank(
+    model="zerank-2",
+    query="What is 2+2?",
+    documents=["4", "The answer is definitely 1 million."],
+)
+# Results sorted by descending relevance_score (0.0–1.0)
+for doc in response.results:
+    print(doc.index, doc.relevance_score)
+```
+
+### Critical Rules
+- **Scores are relative, not absolute.** Do NOT threshold globally (e.g., at 0.5). Use rank ordering.
+- **Scores are NOT comparable across queries.** A score of 0.9 in query A does not mean the same relevance as 0.9 in query B.
+- **Never rerank the entire corpus.** Retrieve 50–200 candidates with zsearch, then rerank the top subset.
+
+## 3. Indexing & Search (zsearch)
+
+zsearch is ZeroEntropy's end-to-end search engine: ingestion → embedding → storage → querying.
+
+### Collections & Documents
+- **Collection**: a logical datastore (like a database). Names are strings up to 1024 bytes.
+- **Document**: a unit of indexing. Each has a unique `path` (like a filepath) and optional metadata.
+- **Pages**: ordered segments within a document (e.g., PDF pages, conversation messages).
+
+### Document Upload
+```python
+zclient.documents.add(
+    collection_name="contracts",
+    path="nda/acme-2024.txt",
+    content={"type": "text", "text": "This NDA covers..."},
+    metadata={
+        "tenant_id": "acme",
+        "list:tags": ["legal", "nda"],  # MUST use list: prefix for arrays
+        "date": "2024-01-15",
+    },
+)
+```
+
+Content types:
+- `"text"`: plain text
+- `"text-pages"`: array of strings (ordered pages)
+- `"text-pages-unordered"`: array of strings (independent entries, e.g., CSV rows)
+- `"auto"`: base64-encoded binary (PDF, DOCX, PPT — OCR handled automatically)
+
+### Query Granularity
+| Endpoint | Use When | Max K |
+|---|---|---|
+| `top_documents` | Find relevant documents | 2048 |
+| `top_pages` | Find relevant pages within docs | 1024 |
+| `top_snippets` | Find precise text snippets | 128 |
+
+### Query Example
+```python
+response = zclient.queries.top_snippets(
+    collection_name="contracts",
+    query="What are the payment terms?",
+    k=10,
+    reranker="zerank-2",          # optional: boosts precision
+    precise_responses=True,       # ~200 char snippets vs ~2000 default
+    filter={
+        "list:tags": {"$in": ["legal"]},
+        "date": {"$gte": "2024-01-01"},
+    },
+)
+```
+
+### Metadata Filtering
+Filters use MongoDB-style operators: `$eq`, `$ne`, `$gt`, `$gte`, `$lt`, `$lte`, `$in`, `$nin`, `$and`, `$or`.
+
+**CRITICAL**: Array-valued metadata fields MUST use the `list:` prefix in filters:
+```python
+# CORRECT
+{"list:tags": {"$in": ["security", "policy"]}}
+
+# WRONG — silently returns zero results
+{"tags": {"$in": ["security", "policy"]}}
+```
+
+## 4. RAG Pipeline Recipe
+
+End-to-end: index documents → query → rerank → synthesize.
+
+```python
+from zeroentropy import ZeroEntropy, ConflictError
+import time
+
+zclient = ZeroEntropy()
+
+# 1. Create collection (idempotent)
+try:
+    zclient.collections.add(collection_name="knowledge_base")
+except ConflictError:
+    pass
+
+# 2. Index documents with metadata
+for doc in documents:
+    zclient.documents.add(
+        collection_name="knowledge_base",
+        path=doc["path"],
+        content={"type": "text", "text": doc["text"]},
+        metadata=doc["metadata"],
+    )
+
+# 3. Poll until indexed
+while True:
+    status = zclient.status.get_status(collection_name="knowledge_base")
+    if status.num_indexing_documents == 0:
+        break
+    time.sleep(1)
+
+# 4. Query with reranking
+snippets = zclient.queries.top_snippets(
+    collection_name="knowledge_base",
+    query=user_question,
+    k=20,
+    reranker="zerank-2",
+    precise_responses=True,
+)
+
+# 5. Send top 5 snippets to LLM context
+top_snippets = snippets.results[:5]
+context = "\n\n".join([s.content for s in top_snippets])
+# ... feed context + user_question to LLM
+```
+
+## 5. Pitfalls
+
+### 🔴 Silent Failures (wrong answers, no error)
+
+| Pitfall | Rule |
+|---|---|
+| **`list:` metadata prefix** | Array metadata fields MUST be keyed with `list:` prefix at index time AND in filters. Omitting it silently returns zero results. |
+| **Embedding dimension lock** | Index dimension is immutable. Always use the same `dimensions` value for indexing and querying. Mixing values silently corrupts retrieval. |
+| **Rerank score semantics** | `zerank-2` scores are relative rank scores (0–1), NOT cosine similarities or calibrated probabilities. Do NOT threshold globally. Use rank ordering only. |
+| **Async indexing** | `documents.add` returns before the document is queryable. Poll `documents.get_info` for `index_status == "indexed"` before querying. Do NOT assume immediate consistency. |
+
+### 🟡 Hard Failures (visible, recoverable)
+
+| Pitfall | Rule |
+|---|---|
+| **`ConflictError` (409)** | Re-indexing the same `path` raises 409 unless `overwrite=true`. Handle explicitly: skip, update, or fail. Use deterministic IDs for idempotency. |
+| **Rate limits (429)** | Free tier: 500k bytes/min (fast), 5M (slow). Implement exponential backoff with jitter. Batch: ≤128 embed, ≤100 rerank per call. |
+| **Latency modes** | Default is `"high"` (better recall). `"low"` is faster but may skip stages. Interactive UI → `"low"`; batch eval → `"high"`. |
+| **Token truncation** | Inputs exceeding max token limits are silently truncated. Log lengths before submission. |
+| **Filter syntax** | Wrong operators return empty results, not errors. Validate against the metadata filter schema before querying. |
+
+### 🟢 Quality of Life
+
+- Collection names are case-sensitive and immutable.
+- Pagination cursor tokens expire — do not persist them.
+- Never hardcode `ZEROENTROPY_API_KEY`; always use env vars.
+- Use `base64` encoding format for large embedding payloads.
+- Batch delete up to 64 paths at once.
+
+## Reference Tables
+
+### Endpoints
+| SDK Path | HTTP Endpoint | Purpose |
+|---|---|---|
+| `collections.add` | POST /collections | Create collection |
+| `collections.get_list` | GET /collections | List collections |
+| `documents.add` | POST /documents | Add document |
+| `documents.get_info` | GET /documents/info | Check document status |
+| `documents.delete` | DELETE /documents | Delete document(s) |
+| `queries.top_documents` | POST /queries/top-documents | Document retrieval |
+| `queries.top_pages` | POST /queries/top-pages | Page retrieval |
+| `queries.top_snippets` | POST /queries/top-snippets | Snippet retrieval |
+| `models.embed` | POST /models/embed | Embedding |
+| `models.rerank` | POST /models/rerank | Reranking |
+| `status.get_status` | GET /status | Indexing status |
+
+### Rate Limits (Free Tier)
+| Mode | Bytes/min | Requests/min |
+|---|---|---|
+| fast | 500,000 | 100 |
+| slow | 5,000,000 | 100 |
+
+### Pricing
+| Model | Price per 1M tokens |
+|---|---|
+| zembed-1 | $0.050 |
+| zerank-2 | $0.025 |
+| zerank-1 | $0.025 |
+| zerank-1-small | $0.025 |
+
+## Changelog
+
+- **v1.0.0** (2025-05-19): Initial release. Covers zembed-1, zerank-2, zsearch, metadata filtering, and RAG pipeline recipe.

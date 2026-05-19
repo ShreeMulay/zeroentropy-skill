@@ -1,0 +1,91 @@
+name: CI
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      
+      - name: Install dependencies
+        run: npm ci
+      
+      - name: Lint Markdown
+        run: npm run lint
+      
+      - name: Check links
+        uses: lycheeverse/lychee-action@v1
+        with:
+          args: --no-progress README.md SKILL.md recipes/*.md
+          fail: true
+
+  validate-skill:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      
+      - name: Install dependencies
+        run: |
+          pip install pyyaml
+      
+      - name: Validate SKILL.md structure
+        run: python tests/test_skill_lint.py
+      
+      - name: Validate skill.json
+        run: |
+          python -c "import json; json.load(open('skill.json'))"
+      
+      - name: Validate schemas
+        run: |
+          python -c "import json; [json.load(open(f)) for f in __import__('glob').glob('schemas/*.json')]"
+
+  typecheck-examples:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      
+      - name: Install dependencies
+        run: npm ci
+      
+      - name: Type check TypeScript examples
+        run: npm run typecheck
+
+  integration:
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: [lint, validate-skill]
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      
+      - name: Install ZeroEntropy SDK
+        run: pip install zeroentropy pytest
+      
+      - name: Run integration tests
+        env:
+          ZEROENTROPY_API_KEY: ${{ secrets.ZEROENTROPY_API_KEY }}
+        run: pytest tests/test_api_contract.py -v

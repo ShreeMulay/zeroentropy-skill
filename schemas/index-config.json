@@ -1,0 +1,44 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "ZeroEntropy Index Configuration",
+  "description": "Schema for ZeroEntropy collection/index configuration",
+  "type": "object",
+  "required": ["collection_name"],
+  "properties": {
+    "collection_name": {
+      "type": "string",
+      "maxLength": 1024,
+      "description": "Name of the collection (up to 1024 UTF-8 bytes)"
+    },
+    "embedding_model": {
+      "type": "string",
+      "enum": ["zembed-1"],
+      "default": "zembed-1",
+      "description": "Embedding model to use"
+    },
+    "dimensions": {
+      "type": "integer",
+      "enum": [2560, 1280, 640, 320, 160, 80, 40],
+      "default": 2560,
+      "description": "Embedding dimensions (must match query dimensions)"
+    },
+    "metadata_schema": {
+      "type": "object",
+      "description": "Expected metadata fields and their types",
+      "additionalProperties": {
+        "type": "object",
+        "properties": {
+          "type": {
+            "type": "string",
+            "enum": ["string", "array"]
+          },
+          "required": {
+            "type": "boolean",
+            "default": false
+          }
+        },
+        "required": ["type"]
+      }
+    }
+  }
+}

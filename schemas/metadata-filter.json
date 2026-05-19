@@ -1,0 +1,46 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "ZeroEntropy Metadata Filter",
+  "description": "Schema for ZeroEntropy metadata filter queries",
+  "type": "object",
+  "additionalProperties": {
+    "oneOf": [
+      {
+        "type": "string",
+        "description": "Shorthand for $eq operator"
+      },
+      {
+        "type": "object",
+        "properties": {
+          "$eq": { "type": "string" },
+          "$ne": { "type": "string" },
+          "$gt": { "type": "string" },
+          "$gte": { "type": "string" },
+          "$lt": { "type": "string" },
+          "$lte": { "type": "string" },
+          "$in": {
+            "type": "array",
+            "items": { "type": "string" }
+          },
+          "$nin": {
+            "type": "array",
+            "items": { "type": "string" }
+          }
+        },
+        "additionalProperties": false
+      }
+    ]
+  },
+  "properties": {
+    "$and": {
+      "type": "array",
+      "items": { "$ref": "#" },
+      "description": "All conditions must be true"
+    },
+    "$or": {
+      "type": "array",
+      "items": { "$ref": "#" },
+      "description": "At least one condition must be true"
+    }
+  }
+}

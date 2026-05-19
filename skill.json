@@ -1,0 +1,14 @@
+{
+  "name": "zeroentropy-skill",
+  "version": "1.0.0",
+  "description": "ZeroEntropy agent skill for embeddings, reranking, and search",
+  "license": "MIT",
+  "homepage": "https://github.com/ShreeMulay/zeroentropy-skill",
+  "compatibleWith": ["opencode", "claude-code", "cursor", "copilot", "goose", "codex"],
+  "keywords": ["zeroentropy", "zembed", "zerank", "zsearch", "embedding", "reranking", "semantic-search", "RAG", "retrieval"],
+  "author": "Shree Mulay",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/ShreeMulay/zeroentropy-skill.git"
+  }
+}
