@@ -16,11 +16,32 @@ metadata:
 
 ## Quick Routing
 
-- **Embedding text?** → [§1 Embedding (zembed-1)](#1-embedding-zembed-1)
-- **Reranking candidates?** → [§2 Reranking (zerank-2)](#2-reranking-zerank-2)
-- **Indexing or searching documents?** → [§3 Indexing & Search (zsearch)](#3-indexing--search-zsearch)
-- **Building a full RAG pipeline?** → [§4 RAG Pipeline Recipe](#4-rag-pipeline-recipe)
-- **Debugging silent failures?** → [§5 ⚠️ Pitfalls](#5-pitfalls)
+**What are you trying to do?**
+
+| Goal | Use | Go To |
+|---|---|---|
+| Get vector embeddings for my own vector DB | `zembed-1` standalone | [§1 Embedding](#1-embedding-zembed-1) |
+| Reorder search results I already have | `zerank-2` standalone | [§2 Reranking](#2-reranking-zerank-2) |
+| Search documents I've already indexed | `zsearch` queries | [§3 Searching](#3-indexing--search-zsearch) |
+| Upload documents and make them searchable | `zsearch` indexing | [§3 Indexing](#3-indexing--search-zsearch) |
+| Build a complete Q&A system over documents | Full RAG pipeline | [§4 RAG Pipeline](#4-rag-pipeline-recipe) |
+| Something broke silently | Pitfalls guide | [§5 ⚠️ Pitfalls](#5-pitfalls)
+
+**Decision Tree:**
+
+```
+Do you have documents indexed in ZeroEntropy?
+├── YES → Do you need to search them?
+│   ├── YES → Use zsearch queries (§3)
+│   └── NO  → Check status/polling (§3)
+└── NO  → Do you have a vector database already?
+    ├── YES → Use zembed-1 to generate embeddings (§1)
+    └── NO  → Use zsearch to index + search (§3 → §4)
+
+Do you have candidate results that need better ranking?
+├── YES → Use zerank-2 reranking (§2)
+└── NO  → Retrieve candidates first with zsearch (§3)
+```
 
 ## Setup
 
@@ -29,6 +50,54 @@ metadata:
    - Node: `npm install zeroentropy`
 2. Set your API key: `export ZEROENTROPY_API_KEY="your_key"`
 3. (Optional) Use EU endpoints: set `base_url` to `https://eu-api.zeroentropy.dev/v1`
+
+## When to Use What
+
+### Use `zembed-1` (Embeddings) When:
+- You have your own vector database (Pinecone, Weaviate, Qdrant, etc.)
+- You need embeddings for clustering, classification, or similarity tasks
+- You're building a custom retrieval pipeline
+- **Don't use if**: You want end-to-end search with indexing included
+
+### Use `zerank-2` (Reranking) When:
+- You already have candidate documents from another search system
+- You need to boost precision of existing results
+- You're doing two-stage retrieval (fast retrieval → precise reranking)
+- **Don't use if**: You don't have candidate documents yet (use zsearch first)
+
+### Use `zsearch` (Full Search) When:
+- You want document indexing + search in one platform
+- You need OCR for PDFs/DOCX files
+- You want metadata filtering built-in
+- You need snippet-level retrieval
+- **Don't use if**: You already have a vector DB and just need embeddings
+
+### Use Full RAG Pipeline When:
+- You're building a question-answering system
+- You need grounded generation (reduce hallucinations)
+- You want automatic context injection into LLM prompts
+- **Always includes**: zsearch indexing → querying → reranking → synthesis
+
+## Plugin Integration (OpenCode)
+
+If you're using OpenCode, you can install this skill alongside a lightweight plugin that adds native tools:
+
+```bash
+# Install the skill (teaches the agent how to use ZeroEntropy)
+npx skills add github:ShreeMulay/zeroentropy-skill
+
+# Optional: Install the OpenCode plugin (adds native zeroentropy tools)
+# Add to your opencode.json plugins array:
+# "zeroentropy-opencode-plugin"
+```
+
+**With the plugin installed**, OpenCode gains these native tools:
+- `zeroentropy_search` — Search indexed collections
+- `zeroentropy_embed` — Generate embeddings
+- `zeroentropy_rerank` — Rerank candidate documents
+- `zeroentropy_index` — Add documents to collections
+
+**Without the plugin**, the agent uses the SDK directly following the recipes below.
 
 ## 1. Embedding (zembed-1)
 

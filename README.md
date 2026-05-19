@@ -75,6 +75,30 @@ zeroentropy-skill/
 | Goose | Copy to `.goose/skills/` | ✅ Supported |
 | Codex CLI | Copy to `.codex/skills/` | ✅ Supported |
 
+## OpenCode Plugin (Optional)
+
+For OpenCode users, an optional native plugin adds ZeroEntropy tools directly:
+
+```bash
+# Install the skill (required - teaches the agent)
+npx skills add github:ShreeMulay/zeroentropy-skill
+
+# Optional: Add the plugin to opencode.json for native tools
+{
+  "plugins": [
+    "zeroentropy-opencode-plugin"
+  ]
+}
+```
+
+**Why use the plugin?**
+- Native OpenCode tools (no MCP server overhead)
+- Automatic error handling and retry guidance
+- Type-safe parameters with inline documentation
+- Zero context window impact vs external MCP servers
+
+See [plugin/README.md](plugin/README.md) for details.
+
 ## Contributing
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines on adding new recipes, updating API coverage, and submitting pull requests.

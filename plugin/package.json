@@ -1,0 +1,29 @@
+{
+  "name": "zeroentropy-opencode-plugin",
+  "version": "1.0.0",
+  "description": "OpenCode plugin for ZeroEntropy - adds native search, embed, rerank, and index tools",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsc --watch"
+  },
+  "dependencies": {
+    "@opencode-ai/plugin": "^0.1.0",
+    "zeroentropy": "^1.0.0"
+  },
+  "devDependencies": {
+    "typescript": "^5.4.0",
+    "@types/node": "^20.0.0"
+  },
+  "peerDependencies": {
+    "@opencode-ai/plugin": "^0.1.0"
+  },
+  "keywords": ["opencode", "zeroentropy", "plugin", "search", "embeddings", "rerank"],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/ShreeMulay/zeroentropy-skill",
+    "directory": "plugin"
+  }
+}
