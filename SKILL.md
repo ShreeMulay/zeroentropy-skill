@@ -96,6 +96,9 @@ npx skills add github:ShreeMulay/zeroentropy-skill
 - `zeroentropy_embed` — Generate embeddings
 - `zeroentropy_rerank` — Rerank candidate documents
 - `zeroentropy_index` — Add documents to collections
+- `zeroentropy_collection` — Create, delete, or list collections
+- `zeroentropy_status` — Check document indexing status
+- `zeroentropy_batch` — Batch index multiple documents
 
 **Without the plugin**, the agent uses the SDK directly following the recipes below.
 
@@ -312,6 +315,53 @@ context = "\n\n".join([s.content for s in top_snippets])
 - Never hardcode `ZEROENTROPY_API_KEY`; always use env vars.
 - Use `base64` encoding format for large embedding payloads.
 - Batch delete up to 64 paths at once.
+
+## Plugin Tool Reference
+
+When using the OpenCode plugin, these tools are available natively:
+
+### `zeroentropy_collection` — Manage Collections
+
+```typescript
+// Create a collection
+{ action: "create", collection_name: "my-kb" }
+
+// Delete a collection
+{ action: "delete", collection_name: "my-kb" }
+
+// List all collections
+{ action: "list" }
+```
+
+### `zeroentropy_status` — Check Document Status
+
+```typescript
+// Check if a document is indexed and ready to query
+{ collection_name: "my-kb", path: "doc.txt" }
+// Returns: { status: "indexed" | "pending" | "failed", last_updated, ... }
+```
+
+### `zeroentropy_batch` — Batch Index Documents
+
+```typescript
+// Index multiple documents at once
+{
+  collection_name: "my-kb",
+  documents: [
+    { path: "doc1.txt", content: "...", content_type: "text" },
+    { path: "doc2.txt", content: "...", content_type: "text", metadata: { tags: ["important"] } }
+  ]
+}
+// Returns: { success_count, failed_count, errors: [...] }
+```
+
+### Error Handling
+
+All plugin tools implement automatic retry with exponential backoff:
+- **429 (Rate Limit)**: Retries 4 times with delays of 1s, 2s, 4s, 8s
+- **5xx (Server Error)**: Retries with same backoff strategy
+- **409 (Conflict)**: Returns structured error with suggestion (no retry)
+- **400 (Bad Request)**: Returns structured error with details (no retry)
 
 ## Reference Tables
 

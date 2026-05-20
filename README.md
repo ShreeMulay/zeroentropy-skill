@@ -11,6 +11,9 @@
 - **zsearch** — End-to-end search engine with OCR, chunking, embedding, and querying
 - **Metadata filtering** — MongoDB-style filters with array prefix rules
 - **RAG pipelines** — Complete index → search → rerank → synthesize workflows
+- **Collection management** — Create, delete, and list collections
+- **Batch operations** — Index multiple documents in one call
+- **Status polling** — Check document indexing status
 
 ## Installation
 
@@ -93,8 +96,9 @@ npx skills add github:ShreeMulay/zeroentropy-skill
 
 **Why use the plugin?**
 - Native OpenCode tools (no MCP server overhead)
-- Automatic error handling and retry guidance
+- Automatic error handling with exponential backoff retry for rate limits
 - Type-safe parameters with inline documentation
+- 7 tools: search, embed, rerank, index, collection management, status polling, batch operations
 - Zero context window impact vs external MCP servers
 
 See [plugin/README.md](plugin/README.md) for details.

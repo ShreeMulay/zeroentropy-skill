@@ -14,6 +14,113 @@ import { ZeroEntropy } from 'zeroentropy';
 const z = tool.schema;
 const zclient = new ZeroEntropy();
 
+const MAX_RETRIES = 4;
+
+interface StructuredError {
+  error: string;
+  status?: number;
+  retryable: boolean;
+  attempts: number;
+  suggestion?: string;
+}
+
+type RetryResult<T> =
+  | { ok: true; data: T; attempts: number }
+  | { ok: false; error: StructuredError };
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function getErrorStatus(error: any): number | undefined {
+  if (typeof error?.status === 'number') return error.status;
+  if (typeof error?.statusCode === 'number') return error.statusCode;
+  if (typeof error?.response?.status === 'number') return error.response.status;
+
+  const message = String(error?.message ?? '');
+  const statusMatch = message.match(/\b(4\d{2}|5\d{2})\b/);
+  return statusMatch ? Number(statusMatch[1]) : undefined;
+}
+
+function isRetryableError(error: any): boolean {
+  const status = getErrorStatus(error);
+  return status === 429 || (typeof status === 'number' && status >= 500 && status < 600);
+}
+
+function getErrorMessage(error: any): string {
+  if (typeof error?.message === 'string' && error.message.length > 0) return error.message;
+  if (typeof error === 'string') return error;
+  return 'ZeroEntropy API request failed';
+}
+
+function getErrorSuggestion(status?: number): string | undefined {
+  switch (status) {
+    case 400:
+      return 'Check the request arguments and schema requirements.';
+    case 401:
+    case 403:
+      return 'Check ZeroEntropy credentials and permissions.';
+    case 409:
+      return 'Resource already exists or conflicts with current state. Use overwrite where available or choose a different path/name.';
+    case 429:
+      return 'Rate limited after retries. Reduce request size or try again later.';
+    default:
+      return undefined;
+  }
+}
+
+async function withRetry<T>(operation: () => Promise<T>): Promise<RetryResult<T>> {
+  let lastError: any;
+
+  for (let attempt = 0; attempt <= MAX_RETRIES; attempt += 1) {
+    try {
+      const data = await operation();
+      return { ok: true, data, attempts: attempt + 1 };
+    } catch (error: any) {
+      lastError = error;
+
+      if (!isRetryableError(error)) {
+        const status = getErrorStatus(error);
+        return {
+          ok: false,
+          error: {
+            error: getErrorMessage(error),
+            status,
+            retryable: false,
+            attempts: attempt + 1,
+            suggestion: getErrorSuggestion(status),
+          },
+        };
+      }
+
+      if (attempt === MAX_RETRIES) break;
+      await sleep(1000 * 2 ** attempt);
+    }
+  }
+
+  const status = getErrorStatus(lastError);
+  return {
+    ok: false,
+    error: {
+      error: getErrorMessage(lastError),
+      status,
+      retryable: true,
+      attempts: MAX_RETRIES + 1,
+      suggestion: getErrorSuggestion(status),
+    },
+  };
+}
+
+function errorOutput(error: StructuredError) {
+  return { output: JSON.stringify(error, null, 2) };
+}
+
+function normalizeIndexStatus(indexStatus?: string): 'indexed' | 'pending' | 'failed' {
+  if (indexStatus === 'indexed') return 'indexed';
+  if (indexStatus === 'parsing_failed' || indexStatus === 'indexing_failed') return 'failed';
+  return 'pending';
+}
+
 export const ZeroEntropyPlugin: Plugin = async (ctx) => {
   return {
     tool: {
@@ -34,57 +141,40 @@ export const ZeroEntropyPlugin: Plugin = async (ctx) => {
           include_content: z.boolean().default(false).describe('Include document/page content'),
         },
         async execute(args, context) {
-          try {
-            let response;
-            const params = {
-              collection_name: args.collection_name,
-              query: args.query,
-              k: args.k,
-              filter: args.filter,
-              reranker: args.reranker,
-              include_metadata: args.include_metadata,
-              include_content: args.include_content,
-            };
+          let response;
+          const params = {
+            collection_name: args.collection_name,
+            query: args.query,
+            k: args.k,
+            filter: args.filter,
+            reranker: args.reranker,
+            include_metadata: args.include_metadata,
+            include_content: args.include_content,
+          };
 
+          const result = await withRetry(async () => {
             switch (args.query_type) {
               case 'documents':
-                response = await zclient.queries.topDocuments(params);
-                break;
+                return zclient.queries.topDocuments(params);
               case 'pages':
-                response = await zclient.queries.topPages(params);
-                break;
-              default: // snippets
-                response = await zclient.queries.topSnippets({
+                return zclient.queries.topPages(params);
+              default:
+                return zclient.queries.topSnippets({
                   ...params,
                   precise_responses: args.precise_responses,
                 });
             }
+          });
 
-            return {
-              output: JSON.stringify({
-                results: response.results,
-                count: response.results.length,
-              }, null, 2),
-            };
-          } catch (error: any) {
-            if (error.message?.includes('429')) {
-              return {
-                output: JSON.stringify({
-                  error: 'Rate limited. Retry with exponential backoff.',
-                  retry_after: '15 seconds',
-                }),
-              };
-            }
-            if (error.message?.includes('Conflict') || error.status === 409) {
-              return {
-                output: JSON.stringify({
-                  error: 'Collection or document already exists.',
-                  suggestion: 'Use overwrite=true or check if collection exists first.',
-                }),
-              };
-            }
-            throw error;
-          }
+          if (!result.ok) return errorOutput(result.error);
+          response = result.data;
+
+          return {
+            output: JSON.stringify({
+              results: response.results,
+              count: response.results.length,
+            }, null, 2),
+          };
         },
       }),
 
@@ -101,34 +191,28 @@ export const ZeroEntropyPlugin: Plugin = async (ctx) => {
           latency: z.enum(['fast' as const, 'slow' as const]).optional().describe('fast=subsecond, slow=cheaper'),
         },
         async execute(args, context) {
-          try {
-            const inputTexts = args.texts;
-            const response = await zclient.models.embed({
+          const inputTexts = args.texts;
+          const result = await withRetry(() =>
+            zclient.models.embed({
               model: 'zembed-1',
               input: Array.isArray(inputTexts) ? inputTexts : [inputTexts],
               input_type: args.input_type,
               dimensions: args.dimensions,
               encoding_format: args.encoding_format,
               latency: args.latency,
-            });
+            })
+          );
 
-            return {
-              output: JSON.stringify({
-                embeddings: response.results.map((r: any) => r.embedding),
-                count: response.results.length,
-                dimensions: args.dimensions,
-              }, null, 2),
-            };
-          } catch (error: any) {
-            if (error.message?.includes('429')) {
-              return {
-                output: JSON.stringify({
-                  error: 'Rate limited. Use fewer texts per call or switch to slow latency.',
-                }),
-              };
-            }
-            throw error;
-          }
+          if (!result.ok) return errorOutput(result.error);
+          const response = result.data;
+
+          return {
+            output: JSON.stringify({
+              embeddings: response.results.map((r: any) => r.embedding),
+              count: response.results.length,
+              dimensions: args.dimensions,
+            }, null, 2),
+          };
         },
       }),
 
@@ -143,35 +227,29 @@ export const ZeroEntropyPlugin: Plugin = async (ctx) => {
           top_n: z.number().optional().describe('Return only top N results'),
         },
         async execute(args, context) {
-          try {
-            const docs = args.documents;
-            const response = await zclient.models.rerank({
+          const docs = args.documents;
+          const result = await withRetry(() =>
+            zclient.models.rerank({
               model: 'zerank-2',
               query: args.query,
               documents: Array.isArray(docs) ? docs : [docs],
               top_n: args.top_n,
-            });
+            })
+          );
 
-            return {
-              output: JSON.stringify({
-                results: response.results.map((r: any) => ({
-                  index: r.index,
-                  score: r.relevance_score,
-                  document: args.documents[r.index],
-                })),
-                count: response.results.length,
-              }, null, 2),
-            };
-          } catch (error: any) {
-            if (error.message?.includes('429')) {
-              return {
-                output: JSON.stringify({
-                  error: 'Rate limited. Batch size too large. Use ≤100 documents per call.',
-                }),
-              };
-            }
-            throw error;
-          }
+          if (!result.ok) return errorOutput(result.error);
+          const response = result.data;
+
+          return {
+            output: JSON.stringify({
+              results: response.results.map((r: any) => ({
+                index: r.index,
+                score: r.relevance_score,
+                document: args.documents[r.index],
+              })),
+              count: response.results.length,
+            }, null, 2),
+          };
         },
       }),
 
@@ -190,52 +268,192 @@ export const ZeroEntropyPlugin: Plugin = async (ctx) => {
           overwrite: z.boolean().default(false).describe('Replace if document already exists'),
         },
         async execute(args, context) {
-          try {
-            let content: any;
-            switch (args.content_type) {
-              case 'text':
-                content = { type: 'text' as const, text: args.content };
-                break;
-              case 'text-pages':
-                content = { type: 'text-pages' as const, pages: args.pages || [args.content] };
-                break;
-              case 'text-pages-unordered':
-                content = { type: 'text-pages-unordered' as const, pages: args.pages || [args.content] };
-                break;
-              case 'auto':
-                content = { type: 'auto' as const, base64_data: args.content };
-                break;
-              default:
-                content = { type: 'text' as const, text: args.content };
-            }
+          let content: any;
+          switch (args.content_type) {
+            case 'text':
+              content = { type: 'text' as const, text: args.content };
+              break;
+            case 'text-pages':
+              content = { type: 'text-pages' as const, pages: args.pages || [args.content] };
+              break;
+            case 'text-pages-unordered':
+              content = { type: 'text-pages-unordered' as const, pages: args.pages || [args.content] };
+              break;
+            case 'auto':
+              content = { type: 'auto' as const, base64_data: args.content };
+              break;
+            default:
+              content = { type: 'text' as const, text: args.content };
+          }
 
-            await zclient.documents.add({
+          const result = await withRetry(() =>
+            zclient.documents.add({
               collection_name: args.collection_name,
               path: args.path,
               content,
               metadata: args.metadata as Record<string, string | string[]> | undefined,
               overwrite: args.overwrite,
-            });
+            })
+          );
 
+          if (!result.ok) return errorOutput(result.error);
+
+          return {
+            output: JSON.stringify({
+              success: true,
+              path: args.path,
+              status: 'indexed',
+              note: 'Document may take a few seconds to become queryable. Poll status if needed.',
+            }, null, 2),
+          };
+        },
+      }),
+
+      /**
+       * Manage ZeroEntropy collections
+       */
+      zeroentropy_collection: tool({
+        description: 'Create, delete, or list ZeroEntropy collections.',
+        args: {
+          action: z.enum(['create' as const, 'delete' as const, 'list' as const]).describe('Collection operation to perform'),
+          collection_name: z.string().optional().describe('Collection name. Required for create and delete.'),
+        },
+        async execute(args, context) {
+          if (args.action !== 'list' && !args.collection_name) {
             return {
               output: JSON.stringify({
-                success: true,
-                path: args.path,
-                status: 'indexed',
-                note: 'Document may take a few seconds to become queryable. Poll status if needed.',
+                error: 'collection_name is required for create and delete actions.',
+                retryable: false,
               }, null, 2),
             };
-          } catch (error: any) {
-            if (error.message?.includes('Conflict') || error.status === 409) {
-              return {
-                output: JSON.stringify({
-                  error: 'Document already exists at this path.',
-                  suggestion: 'Set overwrite=true to replace, or use a different path.',
-                }),
-              };
-            }
-            throw error;
           }
+
+          const collections = (zclient as any).collections;
+          const result = await withRetry(async () => {
+            switch (args.action) {
+              case 'create':
+                if (typeof collections?.add === 'function') {
+                  return collections.add({ collection_name: args.collection_name });
+                }
+                return collections.create({ collection_name: args.collection_name });
+              case 'delete':
+                if (typeof collections?.delete === 'function') {
+                  return collections.delete({ collection_name: args.collection_name });
+                }
+                return collections.remove({ collection_name: args.collection_name });
+              case 'list':
+                if (typeof collections?.getList === 'function') return collections.getList({});
+                if (typeof collections?.list === 'function') return collections.list();
+                return collections.getAll();
+            }
+          });
+
+          if (!result.ok) return errorOutput(result.error);
+
+          return {
+            output: JSON.stringify(args.action === 'list'
+              ? { collections: result.data?.collection_names ?? result.data?.collections ?? result.data?.results ?? result.data }
+              : { success: true, action: args.action, collection_name: args.collection_name }, null, 2),
+          };
+        },
+      }),
+
+      /**
+       * Check document indexing status
+       */
+      zeroentropy_status: tool({
+        description: 'Check ZeroEntropy document indexing status.',
+        args: {
+          collection_name: z.string().describe('Collection name containing the document'),
+          path: z.string().describe('Document path to check'),
+        },
+        async execute(args, context) {
+          const documents = (zclient as any).documents;
+          const result = await withRetry(async () => {
+            if (typeof documents?.getInfo === 'function') {
+              return documents.getInfo({ collection_name: args.collection_name, path: args.path });
+            }
+            if (typeof documents?.status === 'function') {
+              return documents.status({ collection_name: args.collection_name, path: args.path });
+            }
+            return documents.get({ collection_name: args.collection_name, path: args.path });
+          });
+
+          if (!result.ok) return errorOutput(result.error);
+          const document = result.data?.document ?? result.data;
+          const indexStatus = document?.index_status ?? document?.status;
+
+          return {
+            output: JSON.stringify({
+              status: normalizeIndexStatus(indexStatus),
+              index_status: indexStatus,
+              last_updated: document?.last_updated ?? document?.updated_at ?? document?.created_at ?? null,
+              path: args.path,
+              collection_name: args.collection_name,
+            }, null, 2),
+          };
+        },
+      }),
+
+      /**
+       * Batch index documents into a collection
+       */
+      zeroentropy_batch: tool({
+        description: 'Batch index multiple documents into a ZeroEntropy collection.',
+        args: {
+          collection_name: z.string().describe('Target collection'),
+          documents: z.array(z.object({
+            path: z.string(),
+            content: z.string(),
+            content_type: z.enum(['text' as const, 'text-pages' as const, 'text-pages-unordered' as const, 'auto' as const]),
+            metadata: z.record(z.string(), z.any()).optional(),
+          })).describe('Documents to index'),
+        },
+        async execute(args, context) {
+          const errors: Array<{ path: string; error: StructuredError }> = [];
+          let successCount = 0;
+
+          for (const document of args.documents) {
+            let content: any;
+            switch (document.content_type) {
+              case 'text':
+                content = { type: 'text' as const, text: document.content };
+                break;
+              case 'text-pages':
+                content = { type: 'text-pages' as const, pages: [document.content] };
+                break;
+              case 'text-pages-unordered':
+                content = { type: 'text-pages-unordered' as const, pages: [document.content] };
+                break;
+              case 'auto':
+                content = { type: 'auto' as const, base64_data: document.content };
+                break;
+            }
+
+            const result = await withRetry(() =>
+              zclient.documents.add({
+                collection_name: args.collection_name,
+                path: document.path,
+                content,
+                metadata: document.metadata as Record<string, string | string[]> | undefined,
+                overwrite: true,
+              })
+            );
+
+            if (result.ok) {
+              successCount += 1;
+            } else {
+              errors.push({ path: document.path, error: result.error });
+            }
+          }
+
+          return {
+            output: JSON.stringify({
+              success_count: successCount,
+              failed_count: errors.length,
+              errors,
+            }, null, 2),
+          };
         },
       }),
     },
