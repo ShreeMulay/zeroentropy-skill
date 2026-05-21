@@ -54,6 +54,7 @@ vi.mock('@opencode-ai/plugin', () => {
   const chain = () => ({
     describe: vi.fn(() => chain()),
     default: vi.fn(() => chain()),
+    max: vi.fn(() => chain()),
     optional: vi.fn(() => chain()),
   });
 
@@ -89,6 +90,24 @@ function parseOutput(result: { output: string }) {
 function rateLimitError() {
   const error = new Error('429 rate limit exceeded');
   (error as Error & { status: number }).status = 429;
+  return error;
+}
+
+function badRequestError() {
+  const error = new Error('Bad Request');
+  (error as Error & { status: number }).status = 400;
+  return error;
+}
+
+function unauthorizedError() {
+  const error = new Error('Unauthorized');
+  (error as Error & { status: number }).status = 401;
+  return error;
+}
+
+function serverError() {
+  const error = new Error('Internal Server Error');
+  (error as Error & { status: number }).status = 500;
   return error;
 }
 
@@ -219,6 +238,67 @@ describe('ZeroEntropy OpenCode plugin', () => {
     });
   });
 
+  describe('retry logic', () => {
+    it('succeeds on the 3rd attempt', async () => {
+      mocks.topSnippets
+        .mockRejectedValueOnce(rateLimitError())
+        .mockRejectedValueOnce(rateLimitError())
+        .mockResolvedValueOnce({ results: [{ path: 'success.md' }] });
+
+      const result = await tools.zeroentropy_search.execute({
+        collection_name: 'kb',
+        query: 'retry twice',
+        k: 1,
+        query_type: 'snippets',
+      }, {});
+
+      expect(mocks.topSnippets).toHaveBeenCalledTimes(3);
+      expect(parseOutput(result)).toEqual({ results: [{ path: 'success.md' }], count: 1 });
+    });
+
+    it('does not retry on 400 Bad Request', async () => {
+      mocks.topDocuments.mockRejectedValueOnce(badRequestError());
+
+      const result = await tools.zeroentropy_search.execute({
+        collection_name: 'kb',
+        query: 'bad request',
+        k: 1,
+        query_type: 'documents',
+      }, {});
+
+      expect(mocks.topDocuments).toHaveBeenCalledTimes(1);
+      expect(parseOutput(result)).toMatchObject({ status: 400, retryable: false, attempts: 1 });
+    });
+
+    it('does not retry on 401 Unauthorized', async () => {
+      mocks.topDocuments.mockRejectedValueOnce(unauthorizedError());
+
+      const result = await tools.zeroentropy_search.execute({
+        collection_name: 'kb',
+        query: 'unauthorized',
+        k: 1,
+        query_type: 'documents',
+      }, {});
+
+      expect(mocks.topDocuments).toHaveBeenCalledTimes(1);
+      expect(parseOutput(result)).toMatchObject({ status: 401, retryable: false, attempts: 1 });
+    });
+
+    it('exhausts all retries on persistent 500', async () => {
+      mocks.topDocuments.mockRejectedValue(serverError());
+
+      const result = await tools.zeroentropy_search.execute({
+        collection_name: 'kb',
+        query: 'server error',
+        k: 1,
+        query_type: 'documents',
+      }, {});
+
+      expect(mocks.topDocuments).toHaveBeenCalledTimes(5);
+      expect(parseOutput(result)).toMatchObject({ status: 500, retryable: true, attempts: 5 });
+    });
+  });
+
   describe('zeroentropy_embed', () => {
     it('generates embeddings for single text', async () => {
       mocks.embed.mockResolvedValueOnce({ results: [{ embedding: [0.1, 0.2, 0.3] }] });
@@ -274,6 +354,20 @@ describe('ZeroEntropy OpenCode plugin', () => {
 
       expect(mocks.embed).toHaveBeenCalledTimes(2);
       expect(parseOutput(result).embeddings).toEqual([[9]]);
+    });
+
+    it('wraps a single text string before calling API', async () => {
+      mocks.embed.mockResolvedValueOnce({ results: [{ embedding: [0.1] }] });
+
+      const result = await tools.zeroentropy_embed.execute({
+        texts: 'hello',
+        input_type: 'query',
+        dimensions: 1,
+        encoding_format: 'float',
+      }, {});
+
+      expect(mocks.embed).toHaveBeenCalledWith(expect.objectContaining({ input: ['hello'] }));
+      expect(parseOutput(result)).toEqual({ embeddings: [[0.1]], count: 1, dimensions: 1 });
     });
   });
 
@@ -380,11 +474,11 @@ describe('ZeroEntropy OpenCode plugin', () => {
     });
   });
 
-  describe('zeroentropy_collection', () => {
+  describe('split collection tools', () => {
     it('creates collection', async () => {
       mocks.collectionAdd.mockResolvedValueOnce({});
 
-      const result = await tools.zeroentropy_collection.execute({ action: 'create', collection_name: 'kb' }, {});
+      const result = await tools.zeroentropy_create_collection.execute({ collection_name: 'kb' }, {});
 
       expect(mocks.collectionAdd).toHaveBeenCalledWith({ collection_name: 'kb' });
       expect(parseOutput(result)).toEqual({ success: true, action: 'create', collection_name: 'kb' });
@@ -393,7 +487,7 @@ describe('ZeroEntropy OpenCode plugin', () => {
     it('deletes collection', async () => {
       mocks.collectionDelete.mockResolvedValueOnce({});
 
-      const result = await tools.zeroentropy_collection.execute({ action: 'delete', collection_name: 'kb' }, {});
+      const result = await tools.zeroentropy_delete_collection.execute({ collection_name: 'kb' }, {});
 
       expect(mocks.collectionDelete).toHaveBeenCalledWith({ collection_name: 'kb' });
       expect(parseOutput(result)).toEqual({ success: true, action: 'delete', collection_name: 'kb' });
@@ -402,9 +496,9 @@ describe('ZeroEntropy OpenCode plugin', () => {
     it('lists collections', async () => {
       mocks.collectionGetList.mockResolvedValueOnce({ collections: [{ name: 'kb' }, { name: 'docs' }] });
 
-      const result = await tools.zeroentropy_collection.execute({ action: 'list' }, {});
+      const result = await tools.zeroentropy_list_collections.execute({}, {});
 
-      expect(mocks.collectionGetList).toHaveBeenCalledOnce();
+      expect(mocks.collectionGetList).toHaveBeenCalledWith({});
       expect(parseOutput(result)).toEqual({ collections: [{ name: 'kb' }, { name: 'docs' }] });
     });
   });
@@ -443,7 +537,7 @@ describe('ZeroEntropy OpenCode plugin', () => {
     });
 
     it('reports failures', async () => {
-      mocks.documentAdd.mockResolvedValueOnce({}).mockRejectedValueOnce(new Error('bad document'));
+      mocks.documentAdd.mockResolvedValueOnce({}).mockRejectedValueOnce(badRequestError());
 
       const result = await tools.zeroentropy_batch.execute({
         collection_name: 'kb',
@@ -456,8 +550,34 @@ describe('ZeroEntropy OpenCode plugin', () => {
       expect(parseOutput(result)).toMatchObject({
         success_count: 1,
         failed_count: 1,
-        errors: [{ path: 'bad.txt', error: { error: 'bad document', retryable: false, attempts: 1 } }],
+        errors: [{ path: 'bad.txt', error: { error: 'Bad Request', status: 400, retryable: false, attempts: 1 } }],
       });
+    });
+
+    it('handles an empty documents array', async () => {
+      const result = await tools.zeroentropy_batch.execute({
+        collection_name: 'kb',
+        documents: [],
+      }, {});
+
+      expect(mocks.documentAdd).not.toHaveBeenCalled();
+      expect(parseOutput(result)).toEqual({ success_count: 0, failed_count: 0, errors: [] });
+    });
+  });
+
+  describe('edge cases', () => {
+    it('handles network error without status as retryable', async () => {
+      mocks.topSnippets.mockRejectedValue(new Error('ECONNRESET'));
+
+      const result = await tools.zeroentropy_search.execute({
+        collection_name: 'kb',
+        query: 'network failure',
+        k: 1,
+        query_type: 'snippets',
+      }, {});
+
+      expect(mocks.topSnippets).toHaveBeenCalledTimes(5);
+      expect(parseOutput(result)).toMatchObject({ error: 'ECONNRESET', retryable: true, attempts: 5 });
     });
   });
 });

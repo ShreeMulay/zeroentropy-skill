@@ -1,6 +1,17 @@
 import { Plugin, tool } from '@opencode-ai/plugin';
 import { ZeroEntropy } from 'zeroentropy';
 
+function safeStringify(obj: unknown): string {
+  try {
+    return JSON.stringify(obj);
+  } catch (e) {
+    return JSON.stringify({
+      error: 'Failed to serialize result',
+      details: e instanceof Error ? e.message : 'Unknown serialization error',
+    });
+  }
+}
+
 /**
  * ZeroEntropy OpenCode Plugin
  * 
@@ -14,7 +25,10 @@ import { ZeroEntropy } from 'zeroentropy';
 const z = tool.schema;
 const zclient = new ZeroEntropy();
 
-const MAX_RETRIES = 4;
+const MAX_RETRIES = Math.min(
+  Number(process.env.ZEROENTROPY_MAX_RETRIES ?? 4),
+  10
+);
 
 interface StructuredError {
   error: string;
@@ -44,6 +58,8 @@ function getErrorStatus(error: any): number | undefined {
 
 function isRetryableError(error: any): boolean {
   const status = getErrorStatus(error);
+  // Retry on 429 (rate limit), 5xx (server errors), and network errors without status
+  if (status === undefined) return true;
   return status === 429 || (typeof status === 'number' && status >= 500 && status < 600);
 }
 
@@ -94,7 +110,9 @@ async function withRetry<T>(operation: () => Promise<T>): Promise<RetryResult<T>
       }
 
       if (attempt === MAX_RETRIES) break;
-      await sleep(1000 * 2 ** attempt);
+      const baseDelay = 1000 * 2 ** attempt;
+      const jitteredDelay = baseDelay + Math.random() * 1000;
+      await sleep(jitteredDelay);
     }
   }
 
@@ -112,7 +130,7 @@ async function withRetry<T>(operation: () => Promise<T>): Promise<RetryResult<T>
 }
 
 function errorOutput(error: StructuredError) {
-  return { output: JSON.stringify(error, null, 2) };
+  return { output: safeStringify(error) };
 }
 
 function normalizeIndexStatus(indexStatus?: string): 'indexed' | 'pending' | 'failed' {
@@ -122,6 +140,10 @@ function normalizeIndexStatus(indexStatus?: string): 'indexed' | 'pending' | 'fa
 }
 
 export const ZeroEntropyPlugin: Plugin = async (ctx) => {
+  if (!process.env.ZEROENTROPY_API_KEY) {
+    console.warn('[zeroentropy-plugin] WARNING: ZEROENTROPY_API_KEY not set. Tools will fail at runtime.');
+  }
+
   return {
     tool: {
       /**
@@ -170,10 +192,10 @@ export const ZeroEntropyPlugin: Plugin = async (ctx) => {
           response = result.data;
 
           return {
-            output: JSON.stringify({
+            output: safeStringify({
               results: response.results,
               count: response.results.length,
-            }, null, 2),
+            }),
           };
         },
       }),
@@ -184,7 +206,7 @@ export const ZeroEntropyPlugin: Plugin = async (ctx) => {
       zeroentropy_embed: tool({
         description: `Generate embeddings using zembed-1. Use input_type="query" for user questions and "document" for corpus text.`,
         args: {
-          texts: z.array(z.string()).describe('Texts to embed (single string or array)'),
+          texts: z.array(z.string()).max(128).describe('Texts to embed (single string or array)'),
           input_type: z.enum(['query' as const, 'document' as const]).describe('Query or document embedding type'),
           dimensions: z.number().default(2560).describe('Embedding dimensions (2560, 1280, 640, 320, 160, 80, 40)'),
           encoding_format: z.enum(['float' as const, 'base64' as const]).default('float').describe('Output format'),
@@ -207,11 +229,11 @@ export const ZeroEntropyPlugin: Plugin = async (ctx) => {
           const response = result.data;
 
           return {
-            output: JSON.stringify({
+            output: safeStringify({
               embeddings: response.results.map((r: any) => r.embedding),
               count: response.results.length,
               dimensions: args.dimensions,
-            }, null, 2),
+            }),
           };
         },
       }),
@@ -223,7 +245,7 @@ export const ZeroEntropyPlugin: Plugin = async (ctx) => {
         description: `Rerank candidate documents by relevance to a query. Scores are relative (0-1), not absolute probabilities. Use rank ordering, not thresholding.`,
         args: {
           query: z.string().describe('Search query'),
-          documents: z.array(z.string()).describe('Candidate documents to rerank'),
+          documents: z.array(z.string()).max(100).describe('Candidate documents to rerank'),
           top_n: z.number().optional().describe('Return only top N results'),
         },
         async execute(args, context) {
@@ -241,14 +263,14 @@ export const ZeroEntropyPlugin: Plugin = async (ctx) => {
           const response = result.data;
 
           return {
-            output: JSON.stringify({
+            output: safeStringify({
               results: response.results.map((r: any) => ({
                 index: r.index,
                 score: r.relevance_score,
                 document: args.documents[r.index],
               })),
               count: response.results.length,
-            }, null, 2),
+            }),
           };
         },
       }),
@@ -262,7 +284,7 @@ export const ZeroEntropyPlugin: Plugin = async (ctx) => {
           collection_name: z.string().describe('Target collection'),
           path: z.string().describe('Unique document path (like a filepath)'),
           content_type: z.enum(['text' as const, 'text-pages' as const, 'text-pages-unordered' as const, 'auto' as const]).describe('text=plain text, text-pages=ordered array, text-pages-unordered=independent entries, auto=base64 binary'),
-          content: z.string().describe('Text content or base64-encoded binary'),
+          content: z.string().max(500_000).describe('Text content or base64-encoded binary'),
           pages: z.array(z.string()).optional().describe('For text-pages content type: array of page strings'),
           metadata: z.record(z.string(), z.any()).optional().describe('Metadata dict. Use list: prefix for array fields (e.g., list:tags)'),
           overwrite: z.boolean().default(false).describe('Replace if document already exists'),
@@ -299,61 +321,95 @@ export const ZeroEntropyPlugin: Plugin = async (ctx) => {
           if (!result.ok) return errorOutput(result.error);
 
           return {
-            output: JSON.stringify({
+            output: safeStringify({
               success: true,
               path: args.path,
               status: 'indexed',
               note: 'Document may take a few seconds to become queryable. Poll status if needed.',
-            }, null, 2),
+            }),
           };
         },
       }),
 
       /**
-       * Manage ZeroEntropy collections
+       * Create a ZeroEntropy collection
        */
-      zeroentropy_collection: tool({
-        description: 'Create, delete, or list ZeroEntropy collections.',
+      zeroentropy_create_collection: tool({
+        description: 'Create a new ZeroEntropy collection.',
         args: {
-          action: z.enum(['create' as const, 'delete' as const, 'list' as const]).describe('Collection operation to perform'),
-          collection_name: z.string().optional().describe('Collection name. Required for create and delete.'),
+          collection_name: z.string().describe('Collection name to create'),
         },
         async execute(args, context) {
-          if (args.action !== 'list' && !args.collection_name) {
-            return {
-              output: JSON.stringify({
-                error: 'collection_name is required for create and delete actions.',
-                retryable: false,
-              }, null, 2),
-            };
-          }
-
           const collections = (zclient as any).collections;
           const result = await withRetry(async () => {
-            switch (args.action) {
-              case 'create':
-                if (typeof collections?.add === 'function') {
-                  return collections.add({ collection_name: args.collection_name });
-                }
-                return collections.create({ collection_name: args.collection_name });
-              case 'delete':
-                if (typeof collections?.delete === 'function') {
-                  return collections.delete({ collection_name: args.collection_name });
-                }
-                return collections.remove({ collection_name: args.collection_name });
-              case 'list':
-                if (typeof collections?.getList === 'function') return collections.getList({});
-                if (typeof collections?.list === 'function') return collections.list();
-                return collections.getAll();
+            if (typeof collections?.add === 'function') {
+              return collections.add({ collection_name: args.collection_name });
             }
+            return collections.create({ collection_name: args.collection_name });
           });
 
           if (!result.ok) return errorOutput(result.error);
 
           return {
-            output: JSON.stringify(args.action === 'list'
-              ? { collections: result.data?.collection_names ?? result.data?.collections ?? result.data?.results ?? result.data }
-              : { success: true, action: args.action, collection_name: args.collection_name }, null, 2),
+            output: safeStringify({
+              success: true,
+              action: 'create',
+              collection_name: args.collection_name,
+            }),
+          };
+        },
+      }),
+
+      /**
+       * Delete a ZeroEntropy collection
+       */
+      zeroentropy_delete_collection: tool({
+        description: 'Delete an existing ZeroEntropy collection.',
+        args: {
+          collection_name: z.string().describe('Collection name to delete'),
+        },
+        async execute(args, context) {
+          const collections = (zclient as any).collections;
+          const result = await withRetry(async () => {
+            if (typeof collections?.delete === 'function') {
+              return collections.delete({ collection_name: args.collection_name });
+            }
+            return collections.remove({ collection_name: args.collection_name });
+          });
+
+          if (!result.ok) return errorOutput(result.error);
+
+          return {
+            output: safeStringify({
+              success: true,
+              action: 'delete',
+              collection_name: args.collection_name,
+            }),
+          };
+        },
+      }),
+
+      /**
+       * List ZeroEntropy collections
+       */
+      zeroentropy_list_collections: tool({
+        description: 'List all ZeroEntropy collections available to the configured API key.',
+        args: {},
+        async execute(args, context) {
+          const collections = (zclient as any).collections;
+          const result = await withRetry(async () => {
+            if (typeof collections?.get_list === 'function') return collections.get_list({});
+            if (typeof collections?.getList === 'function') return collections.getList({});
+            if (typeof collections?.list === 'function') return collections.list();
+            return collections.getAll();
+          });
+
+          if (!result.ok) return errorOutput(result.error);
+
+          return {
+            output: safeStringify({
+              collections: result.data?.collection_names ?? result.data?.collections ?? result.data?.results ?? result.data,
+            }),
           };
         },
       }),
@@ -384,13 +440,13 @@ export const ZeroEntropyPlugin: Plugin = async (ctx) => {
           const indexStatus = document?.index_status ?? document?.status;
 
           return {
-            output: JSON.stringify({
+            output: safeStringify({
               status: normalizeIndexStatus(indexStatus),
               index_status: indexStatus,
               last_updated: document?.last_updated ?? document?.updated_at ?? document?.created_at ?? null,
               path: args.path,
               collection_name: args.collection_name,
-            }, null, 2),
+            }),
           };
         },
       }),
@@ -404,10 +460,10 @@ export const ZeroEntropyPlugin: Plugin = async (ctx) => {
           collection_name: z.string().describe('Target collection'),
           documents: z.array(z.object({
             path: z.string(),
-            content: z.string(),
+            content: z.string().max(500_000),
             content_type: z.enum(['text' as const, 'text-pages' as const, 'text-pages-unordered' as const, 'auto' as const]),
             metadata: z.record(z.string(), z.any()).optional(),
-          })).describe('Documents to index'),
+          })).max(100).describe('Documents to index'),
         },
         async execute(args, context) {
           const errors: Array<{ path: string; error: StructuredError }> = [];
@@ -448,11 +504,11 @@ export const ZeroEntropyPlugin: Plugin = async (ctx) => {
           }
 
           return {
-            output: JSON.stringify({
+            output: safeStringify({
               success_count: successCount,
               failed_count: errors.length,
               errors,
-            }, null, 2),
+            }),
           };
         },
       }),
