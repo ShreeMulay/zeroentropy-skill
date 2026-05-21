@@ -69,39 +69,193 @@ zeroentropy-skill/
 
 ## Supported Agents
 
-| Agent | Installation | Status |
-|---|---|---|
-| OpenCode | `npx skills add github:ShreeMulay/zeroentropy-skill` | ✅ Supported |
-| Claude Code | `/plugin marketplace add` or skills dir | ✅ Supported |
-| Cursor | Copy to `.cursor/skills/` | ✅ Supported |
-| GitHub Copilot | Copy to `.github/skills/` | ✅ Supported |
-| Goose | Copy to `.goose/skills/` | ✅ Supported |
-| Codex CLI | Copy to `.codex/skills/` | ✅ Supported |
+### OpenCode (Recommended)
 
-## OpenCode Plugin (Optional)
-
-For OpenCode users, an optional native plugin adds ZeroEntropy tools directly:
+**Full native plugin support with 9 built-in tools.**
 
 ```bash
-# Install the skill (required - teaches the agent)
+# 1. Install the skill (teaches the agent how to use ZeroEntropy)
 npx skills add github:ShreeMulay/zeroentropy-skill
 
-# Optional: Add the plugin to opencode.json for native tools
+# 2. Activate the native plugin (adds zeroentropy_* tools directly)
+# Edit ~/.opencode/config.json:
 {
   "plugins": [
     "zeroentropy-opencode-plugin"
   ]
 }
+
+# 3. Set your API key
+export ZEROENTROPY_API_KEY="your_api_key"
 ```
 
-**Why use the plugin?**
-- Native OpenCode tools (no MCP server overhead)
-- Automatic error handling with exponential backoff retry for rate limits
-- Type-safe parameters with inline documentation
-- 7 tools: search, embed, rerank, index, collection management, status polling, batch operations
-- Zero context window impact vs external MCP servers
+**What you get:** 9 native tools (`zeroentropy_search`, `zeroentropy_embed`, `zeroentropy_rerank`, `zeroentropy_index`, `zeroentropy_create_collection`, `zeroentropy_delete_collection`, `zeroentropy_list_collections`, `zeroentropy_status`, `zeroentropy_batch`) with automatic retry, error handling, and type-safe parameters.
 
-See [plugin/README.md](plugin/README.md) for details.
+### Claude Code
+
+```bash
+# Install via the skills marketplace
+/plugin marketplace add github:ShreeMulay/zeroentropy-skill
+
+# Or manually copy to the skills directory:
+git clone https://github.com/ShreeMulay/zeroentropy-skill.git ~/.claude/skills/zeroentropy
+```
+
+Claude Code will read `SKILL.md` and learn how to use ZeroEntropy's Python/TypeScript SDKs.
+
+### Cursor
+
+```bash
+# Copy the skill to Cursor's skills directory
+git clone https://github.com/ShreeMulay/zeroentropy-skill.git ~/.cursor/skills/zeroentropy
+```
+
+Cursor will discover `SKILL.md` automatically. The agent will use the SDK examples in `examples/` and `recipes/`.
+
+### GitHub Copilot (Chat / VS Code)
+
+```bash
+# Copy to the GitHub Copilot skills directory
+git clone https://github.com/ShreeMulay/zeroentropy-skill.git ~/.github/skills/zeroentropy
+```
+
+Copilot Chat will reference `SKILL.md` when you ask about ZeroEntropy, embeddings, or RAG pipelines.
+
+### Goose
+
+```bash
+# Copy to Goose's skills directory
+git clone https://github.com/ShreeMulay/zeroentropy-skill.git ~/.goose/skills/zeroentropy
+```
+
+Goose will load `SKILL.md` and use the recipes for indexing, searching, and reranking.
+
+### Codex CLI
+
+```bash
+# Copy to Codex's skills directory
+git clone https://github.com/ShreeMulay/zeroentropy-skill.git ~/.codex/skills/zeroentropy
+```
+
+Codex will read `SKILL.md` and follow the decision trees for when to use embed vs search vs rerank.
+
+### Other Agents
+
+Any agent that reads Markdown files from a skills directory:
+
+```bash
+# Generic installation — just clone to the agent's skills folder
+git clone https://github.com/ShreeMulay/zeroentropy-skill.git <AGENT_SKILLS_DIR>/zeroentropy
+```
+
+The agent will automatically discover `SKILL.md` and learn ZeroEntropy patterns.
+
+---
+
+## How to Use
+
+### With the OpenCode Plugin (Native Tools)
+
+Once installed, just ask your agent naturally:
+
+> **"Search my knowledge base for RAG best practices"**
+
+The agent calls `zeroentropy_search` automatically and returns:
+```json
+{
+  "results": [
+    { "path": "docs/rag-guide.md", "score": 0.95, "snippet": "..." }
+  ],
+  "count": 5
+}
+```
+
+> **"Index these 10 documents into my collection"**
+
+The agent calls `zeroentropy_batch` with all documents at once.
+
+> **"Create a new collection called 'research-papers'"**
+
+The agent calls `zeroentropy_create_collection`.
+
+### Without the Plugin (SDK Mode)
+
+The agent reads `SKILL.md` and writes code using the ZeroEntropy SDK:
+
+```python
+from zeroentropy import ZeroEntropy
+zclient = ZeroEntropy()
+
+# The agent knows to use zembed-1 for embeddings
+response = zclient.models.embed(
+    model="zembed-1",
+    input_type="query",
+    input="What is RAG?",
+    dimensions=2560
+)
+```
+
+### Common Workflows
+
+**1. Full RAG Pipeline:**
+```
+Create collection → Batch index documents → Check status → Search → Rerank → Synthesize answer
+```
+
+**2. Embedding for Clustering:**
+```
+Generate embeddings (zembed-1) → Use in your own clustering algorithm
+```
+
+**3. Two-Stage Retrieval:**
+```
+Fast search (zsearch) → Rerank top results (zerank-2) → Return best matches
+```
+
+---
+
+## Releases & Packages
+
+**No releases or packages needed.** This is a documentation-first skill that agents discover by reading `SKILL.md`.
+
+- **Skill distribution:** Via `git clone` or `npx skills add`
+- **Plugin distribution:** Built locally from source after skill install
+- **Versioning:** Semantic versioning in `skill.json` and `CHANGELOG.md`
+
+To create a release (optional, for human visibility):
+```bash
+# Tag a release on GitHub
+git tag v1.1.0
+git push origin v1.1.0
+# Then create a release on https://github.com/ShreeMulay/zeroentropy-skill/releases
+```
+
+---
+
+## Plugin Architecture
+
+**Why use the OpenCode plugin?**
+
+| Feature | SDK Mode (No Plugin) | Plugin Mode |
+|---------|---------------------|-------------|
+| Setup | Agent writes code | Native tools, zero setup |
+| Speed | Slow (code generation) | Instant (direct API calls) |
+| Error handling | Manual | Automatic retry + backoff |
+| Context window | Uses tokens for code | Zero impact |
+| Type safety | Runtime | Compile-time (Zod schemas) |
+
+**Plugin tools:**
+- `zeroentropy_search` — Search with filters, reranking, snippets/pages/documents
+- `zeroentropy_embed` — Generate embeddings (2560→40 dimensions)
+- `zeroentropy_rerank` — Reorder results by relevance
+- `zeroentropy_index` — Index single document
+- `zeroentropy_create_collection` — Create collection
+- `zeroentropy_delete_collection` — Delete collection
+- `zeroentropy_list_collections` — List all collections
+- `zeroentropy_status` — Check if document is indexed
+- `zeroentropy_batch` — Index up to 100 documents at once
+
+See [plugin/README.md](plugin/README.md) for technical details.
 
 ## Contributing
 
