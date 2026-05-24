@@ -4,13 +4,14 @@
   "description": "ZeroEntropy agent skill for embeddings, reranking, and search",
   "private": true,
   "scripts": {
-    "test": "pytest tests/ && node tests/runner.js",
+    "test": "pytest tests/",
     "lint": "markdownlint-cli2 SKILL.md README.md recipes/*.md",
-    "typecheck": "tsc --noEmit examples/typescript/*.ts"
+    "typecheck": "tsc --noEmit --target ES2022 --module NodeNext --moduleResolution NodeNext --skipLibCheck examples/typescript/*.ts"
   },
   "devDependencies": {
-    "typescript": "^5.4.0",
     "@types/node": "^20.0.0",
-    "markdownlint-cli2": "^0.13.0"
+    "markdownlint-cli2": "^0.13.0",
+    "typescript": "^5.4.0",
+    "zeroentropy": "^0.1.0-alpha.10"
   }
 }

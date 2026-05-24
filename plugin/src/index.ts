@@ -139,6 +139,42 @@ function normalizeIndexStatus(indexStatus?: string): 'indexed' | 'pending' | 'fa
   return 'pending';
 }
 
+function normalizeMetadata(
+  metadata?: Record<string, unknown>
+): Record<string, string | string[]> | undefined {
+  if (!metadata) return undefined;
+
+  const normalized: Record<string, string | string[]> = {};
+
+  for (const [key, value] of Object.entries(metadata)) {
+    if (Array.isArray(value)) {
+      const normalizedKey = key.startsWith('list:') ? key : `list:${key}`;
+      normalized[normalizedKey] = value.map(String);
+      continue;
+    }
+
+    if (value === undefined || value === null) continue;
+    normalized[key] = String(value);
+  }
+
+  return normalized;
+}
+
+function documentAddParams(input: {
+  collection_name: string;
+  path: string;
+  content: any;
+  metadata?: Record<string, unknown>;
+}) {
+  const metadata = normalizeMetadata(input.metadata);
+  return {
+    collection_name: input.collection_name,
+    path: input.path,
+    content: input.content,
+    ...(metadata ? { metadata } : {}),
+  };
+}
+
 export const ZeroEntropyPlugin: Plugin = async (ctx) => {
   if (!process.env.ZEROENTROPY_API_KEY) {
     console.warn('[zeroentropy-plugin] WARNING: ZEROENTROPY_API_KEY not set. Tools will fail at runtime.');
@@ -152,8 +188,8 @@ export const ZeroEntropyPlugin: Plugin = async (ctx) => {
       zeroentropy_search: tool({
         description: `Search documents in a ZeroEntropy collection. Supports documents, pages, or snippets granularity. Use metadata filters with list: prefix for arrays.`,
         args: {
-          collection_name: z.string().describe('Collection name to search'),
-          query: z.string().describe('Natural language search query'),
+          collection_name: z.string().min(1).describe('Collection name to search'),
+          query: z.string().min(1).describe('Natural language search query'),
           k: z.number().default(10).describe('Number of results (max: 2048 docs, 1024 pages, 128 snippets)'),
           query_type: z.enum(['documents' as const, 'pages' as const, 'snippets' as const]).default('snippets').describe('Granularity level'),
           filter: z.record(z.string(), z.any()).optional().describe('Metadata filter (MongoDB-style). Use list: prefix for array fields.'),
@@ -167,15 +203,15 @@ export const ZeroEntropyPlugin: Plugin = async (ctx) => {
           const params = {
             collection_name: args.collection_name,
             query: args.query,
-            k: args.k,
+            k: args.k ?? 10,
             filter: args.filter,
             reranker: args.reranker,
-            include_metadata: args.include_metadata,
-            include_content: args.include_content,
+            include_metadata: args.include_metadata ?? false,
+            include_content: args.include_content ?? false,
           };
 
           const result = await withRetry(async () => {
-            switch (args.query_type) {
+            switch (args.query_type ?? 'snippets') {
               case 'documents':
                 return zclient.queries.topDocuments(params);
               case 'pages':
@@ -183,7 +219,7 @@ export const ZeroEntropyPlugin: Plugin = async (ctx) => {
               default:
                 return zclient.queries.topSnippets({
                   ...params,
-                  precise_responses: args.precise_responses,
+                  precise_responses: args.precise_responses ?? false,
                 });
             }
           });
@@ -206,7 +242,7 @@ export const ZeroEntropyPlugin: Plugin = async (ctx) => {
       zeroentropy_embed: tool({
         description: `Generate embeddings using zembed-1. Use input_type="query" for user questions and "document" for corpus text.`,
         args: {
-          texts: z.array(z.string()).max(128).describe('Texts to embed (single string or array)'),
+          texts: z.array(z.string().min(1)).max(128).describe('Texts to embed (single string or array)'),
           input_type: z.enum(['query' as const, 'document' as const]).describe('Query or document embedding type'),
           dimensions: z.number().default(2560).describe('Embedding dimensions (2560, 1280, 640, 320, 160, 80, 40)'),
           encoding_format: z.enum(['float' as const, 'base64' as const]).default('float').describe('Output format'),
@@ -219,8 +255,8 @@ export const ZeroEntropyPlugin: Plugin = async (ctx) => {
               model: 'zembed-1',
               input: Array.isArray(inputTexts) ? inputTexts : [inputTexts],
               input_type: args.input_type,
-              dimensions: args.dimensions,
-              encoding_format: args.encoding_format,
+              dimensions: args.dimensions ?? 2560,
+              encoding_format: args.encoding_format ?? 'float',
               latency: args.latency,
             })
           );
@@ -232,7 +268,7 @@ export const ZeroEntropyPlugin: Plugin = async (ctx) => {
             output: safeStringify({
               embeddings: response.results.map((r: any) => r.embedding),
               count: response.results.length,
-              dimensions: args.dimensions,
+              dimensions: args.dimensions ?? 2560,
             }),
           };
         },
@@ -244,8 +280,8 @@ export const ZeroEntropyPlugin: Plugin = async (ctx) => {
       zeroentropy_rerank: tool({
         description: `Rerank candidate documents by relevance to a query. Scores are relative (0-1), not absolute probabilities. Use rank ordering, not thresholding.`,
         args: {
-          query: z.string().describe('Search query'),
-          documents: z.array(z.string()).max(100).describe('Candidate documents to rerank'),
+          query: z.string().min(1).describe('Search query'),
+          documents: z.array(z.string().min(1)).max(100).describe('Candidate documents to rerank'),
           top_n: z.number().optional().describe('Return only top N results'),
         },
         async execute(args, context) {
@@ -281,11 +317,11 @@ export const ZeroEntropyPlugin: Plugin = async (ctx) => {
       zeroentropy_index: tool({
         description: `Add a document to a ZeroEntropy collection for indexing. Supports text, pages, and binary content.`,
         args: {
-          collection_name: z.string().describe('Target collection'),
-          path: z.string().describe('Unique document path (like a filepath)'),
+          collection_name: z.string().min(1).describe('Target collection'),
+          path: z.string().min(1).describe('Unique document path (like a filepath)'),
           content_type: z.enum(['text' as const, 'text-pages' as const, 'text-pages-unordered' as const, 'auto' as const]).describe('text=plain text, text-pages=ordered array, text-pages-unordered=independent entries, auto=base64 binary'),
-          content: z.string().max(500_000).describe('Text content or base64-encoded binary'),
-          pages: z.array(z.string()).optional().describe('For text-pages content type: array of page strings'),
+          content: z.string().min(1).max(500_000).describe('Text content or base64-encoded binary'),
+          pages: z.array(z.string().min(1)).optional().describe('For text-pages content type: array of page strings'),
           metadata: z.record(z.string(), z.any()).optional().describe('Metadata dict. Use list: prefix for array fields (e.g., list:tags)'),
           overwrite: z.boolean().default(false).describe('Replace if document already exists'),
         },
@@ -309,13 +345,12 @@ export const ZeroEntropyPlugin: Plugin = async (ctx) => {
           }
 
           const result = await withRetry(() =>
-            zclient.documents.add({
+            zclient.documents.add(documentAddParams({
               collection_name: args.collection_name,
               path: args.path,
               content,
-              metadata: args.metadata as Record<string, string | string[]> | undefined,
-              overwrite: args.overwrite,
-            })
+              metadata: args.metadata,
+            }))
           );
 
           if (!result.ok) return errorOutput(result.error);
@@ -337,7 +372,7 @@ export const ZeroEntropyPlugin: Plugin = async (ctx) => {
       zeroentropy_create_collection: tool({
         description: 'Create a new ZeroEntropy collection.',
         args: {
-          collection_name: z.string().describe('Collection name to create'),
+          collection_name: z.string().min(1).describe('Collection name to create'),
         },
         async execute(args, context) {
           const collections = (zclient as any).collections;
@@ -366,7 +401,7 @@ export const ZeroEntropyPlugin: Plugin = async (ctx) => {
       zeroentropy_delete_collection: tool({
         description: 'Delete an existing ZeroEntropy collection.',
         args: {
-          collection_name: z.string().describe('Collection name to delete'),
+          collection_name: z.string().min(1).describe('Collection name to delete'),
         },
         async execute(args, context) {
           const collections = (zclient as any).collections;
@@ -420,8 +455,8 @@ export const ZeroEntropyPlugin: Plugin = async (ctx) => {
       zeroentropy_status: tool({
         description: 'Check ZeroEntropy document indexing status.',
         args: {
-          collection_name: z.string().describe('Collection name containing the document'),
-          path: z.string().describe('Document path to check'),
+          collection_name: z.string().min(1).describe('Collection name containing the document'),
+          path: z.string().min(1).describe('Document path to check'),
         },
         async execute(args, context) {
           const documents = (zclient as any).documents;
@@ -457,10 +492,10 @@ export const ZeroEntropyPlugin: Plugin = async (ctx) => {
       zeroentropy_batch: tool({
         description: 'Batch index multiple documents into a ZeroEntropy collection.',
         args: {
-          collection_name: z.string().describe('Target collection'),
+          collection_name: z.string().min(1).describe('Target collection'),
           documents: z.array(z.object({
-            path: z.string(),
-            content: z.string().max(500_000),
+            path: z.string().min(1),
+            content: z.string().min(1).max(500_000),
             content_type: z.enum(['text' as const, 'text-pages' as const, 'text-pages-unordered' as const, 'auto' as const]),
             metadata: z.record(z.string(), z.any()).optional(),
           })).max(100).describe('Documents to index'),
@@ -487,13 +522,12 @@ export const ZeroEntropyPlugin: Plugin = async (ctx) => {
             }
 
             const result = await withRetry(() =>
-              zclient.documents.add({
+              zclient.documents.add(documentAddParams({
                 collection_name: args.collection_name,
                 path: document.path,
                 content,
-                metadata: document.metadata as Record<string, string | string[]> | undefined,
-                overwrite: true,
-              })
+                metadata: document.metadata,
+              }))
             );
 
             if (result.ok) {

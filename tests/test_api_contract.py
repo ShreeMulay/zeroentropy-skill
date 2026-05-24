@@ -8,7 +8,13 @@ import os
 import time
 import uuid
 import pytest
-from zeroentropy import ZeroEntropy, ConflictError
+
+zeroentropy = pytest.importorskip(
+    "zeroentropy",
+    reason="zeroentropy SDK not installed; install it to run live API contract tests",
+)
+ZeroEntropy = zeroentropy.ZeroEntropy
+ConflictError = zeroentropy.ConflictError
 
 # Skip all tests if no API key
 pytestmark = pytest.mark.skipif(

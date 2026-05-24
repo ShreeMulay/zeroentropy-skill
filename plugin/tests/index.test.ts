@@ -54,6 +54,7 @@ vi.mock('@opencode-ai/plugin', () => {
   const chain = () => ({
     describe: vi.fn(() => chain()),
     default: vi.fn(() => chain()),
+    min: vi.fn(() => chain()),
     max: vi.fn(() => chain()),
     optional: vi.fn(() => chain()),
   });
@@ -423,9 +424,27 @@ describe('ZeroEntropy OpenCode plugin', () => {
         collection_name: 'kb',
         path: 'doc.txt',
         content: { type: 'text', text: 'hello' },
-        overwrite: false,
       }));
       expect(parseOutput(result)).toMatchObject({ success: true, path: 'doc.txt', status: 'indexed' });
+    });
+
+    it('normalizes metadata arrays with list: prefix for API compatibility', async () => {
+      mocks.documentAdd.mockResolvedValueOnce({});
+
+      await tools.zeroentropy_index.execute({
+        collection_name: 'kb',
+        path: 'doc-with-metadata.txt',
+        content_type: 'text',
+        content: 'hello metadata',
+        metadata: { tags: ['test', 'rag'], category: 'docs' },
+      }, {});
+
+      expect(mocks.documentAdd).toHaveBeenCalledWith(expect.objectContaining({
+        metadata: {
+          'list:tags': ['test', 'rag'],
+          category: 'docs',
+        },
+      }));
     });
 
     it('indexes text-pages document', async () => {
@@ -445,7 +464,7 @@ describe('ZeroEntropy OpenCode plugin', () => {
       }));
     });
 
-    it('handles overwrite=true', async () => {
+    it('omits unsupported overwrite parameter even when requested', async () => {
       mocks.documentAdd.mockResolvedValueOnce({});
 
       await tools.zeroentropy_index.execute({
@@ -456,7 +475,7 @@ describe('ZeroEntropy OpenCode plugin', () => {
         overwrite: true,
       }, {});
 
-      expect(mocks.documentAdd).toHaveBeenCalledWith(expect.objectContaining({ overwrite: true }));
+      expect(mocks.documentAdd).toHaveBeenCalledWith(expect.not.objectContaining({ overwrite: true }));
     });
 
     it('handles 409 conflict', async () => {

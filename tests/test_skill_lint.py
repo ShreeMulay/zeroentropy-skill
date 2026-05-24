@@ -138,32 +138,24 @@ def test_code_fences_have_languages():
     """All code fences in SKILL.md must specify a language."""
     skill_md = SKILL_DIR / "SKILL.md"
     content = skill_md.read_text()
-    
-    # Find opening code fences without language (not closing fences)
-    # Opening fence: ```\n or ```    \n (whitespace then newline)
-    # Closing fence: same pattern but preceded by code content
-    # We look for ``` at start of line, optionally whitespace, then newline
-    # and check if the previous line is empty or markdown (not code)
+
     lines = content.split('\n')
     bad_fences = []
-    
+    in_fence = False
+
     for i, line in enumerate(lines):
         stripped = line.strip()
-        if stripped.startswith('```') and not stripped[3:].strip():
-            # This is a bare fence - could be opening or closing
-            # Check if previous line looks like code (indented or part of a block)
-            if i > 0:
-                prev_line = lines[i-1].strip()
-                # If previous line is also a fence or empty, this is likely an opening fence
-                # If previous line has content, this is likely a closing fence
-                if not prev_line or prev_line.startswith('```') or prev_line.startswith('#'):
-                    # Likely opening fence without language
-                    # But allow frontmatter (first fence in file)
-                    if i > 0:
-                        bad_fences.append((i+1, line))
-    
-    # Allow exactly 2: frontmatter start and end
-    assert len(bad_fences) <= 2, f"Found {len(bad_fences)} opening code fences without language at lines: {[b[0] for b in bad_fences]}"
+
+        if stripped.startswith('```'):
+            if not in_fence:
+                language = stripped[3:].strip()
+                if not language:
+                    bad_fences.append((i+1, line))
+                in_fence = True
+            else:
+                in_fence = False
+
+    assert not bad_fences, f"Found {len(bad_fences)} opening code fences without language at lines: {[b[0] for b in bad_fences]}"
     print("✓ Code fences have language tags")
 
 def main():

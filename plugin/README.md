@@ -116,7 +116,7 @@ Add documents to a collection for indexing.
 The plugin automatically handles:
 
 - **Rate limits (429)**: Returns retry guidance with backoff timing
-- **Conflict errors (409)**: Suggests overwrite or path changes
+- **Conflict errors (409)**: Suggests skip, delete/recreate, or deterministic path changes
 - **Invalid filters**: Validates `list:` prefix for array metadata
 
 ## Configuration

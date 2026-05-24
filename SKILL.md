@@ -29,7 +29,7 @@ metadata:
 
 **Decision Tree:**
 
-```
+```text
 Do you have documents indexed in ZeroEntropy?
 ├── YES → Do you need to search them?
 │   ├── YES → Use zsearch queries (§3)
@@ -96,7 +96,9 @@ npx skills add github:ShreeMulay/zeroentropy-skill
 - `zeroentropy_embed` — Generate embeddings
 - `zeroentropy_rerank` — Rerank candidate documents
 - `zeroentropy_index` — Add documents to collections
-- `zeroentropy_collection` — Create, delete, or list collections
+- `zeroentropy_create_collection` — Create collections
+- `zeroentropy_delete_collection` — Delete collections
+- `zeroentropy_list_collections` — List collections
 - `zeroentropy_status` — Check document indexing status
 - `zeroentropy_batch` — Batch index multiple documents
 
@@ -302,7 +304,7 @@ context = "\n\n".join([s.content for s in top_snippets])
 
 | Pitfall | Rule |
 |---|---|
-| **`ConflictError` (409)** | Re-indexing the same `path` raises 409 unless `overwrite=true`. Handle explicitly: skip, update, or fail. Use deterministic IDs for idempotency. |
+| **`ConflictError` (409)** | Re-indexing the same `path` raises 409. The current live API reports `overwrite` as unavailable, so handle explicitly: skip, delete/recreate intentionally, or use a different deterministic path. |
 | **Rate limits (429)** | Free tier: 500k bytes/min (fast), 5M (slow). Implement exponential backoff with jitter. Batch: ≤128 embed, ≤100 rerank per call. |
 | **Latency modes** | Default is `"high"` (better recall). `"low"` is faster but may skip stages. Interactive UI → `"low"`; batch eval → `"high"`. |
 | **Token truncation** | Inputs exceeding max token limits are silently truncated. Log lengths before submission. |
@@ -320,17 +322,17 @@ context = "\n\n".join([s.content for s in top_snippets])
 
 When using the OpenCode plugin, these tools are available natively:
 
-### `zeroentropy_collection` — Manage Collections
+### Collection Management
 
 ```typescript
 // Create a collection
-{ action: "create", collection_name: "my-kb" }
+zeroentropy_create_collection({ collection_name: "my-kb" })
 
 // Delete a collection
-{ action: "delete", collection_name: "my-kb" }
+zeroentropy_delete_collection({ collection_name: "my-kb" })
 
 // List all collections
-{ action: "list" }
+zeroentropy_list_collections({})
 ```
 
 ### `zeroentropy_status` — Check Document Status
