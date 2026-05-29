@@ -7,7 +7,7 @@ const mocks = vi.hoisted(() => {
   const embed = vi.fn();
   const rerank = vi.fn();
   const documentAdd = vi.fn();
-  const documentStatus = vi.fn();
+  const documentGetInfo = vi.fn();
   const collectionAdd = vi.fn();
   const collectionDelete = vi.fn();
   const collectionGetList = vi.fn();
@@ -19,7 +19,7 @@ const mocks = vi.hoisted(() => {
     embed,
     rerank,
     documentAdd,
-    documentStatus,
+    documentGetInfo,
     collectionAdd,
     collectionDelete,
     collectionGetList,
@@ -39,7 +39,7 @@ vi.mock('zeroentropy', () => ({
     },
     documents: {
       add: mocks.documentAdd,
-      status: mocks.documentStatus,
+      getInfo: mocks.documentGetInfo,
     },
     collections: {
       add: mocks.collectionAdd,
@@ -417,7 +417,6 @@ describe('ZeroEntropy OpenCode plugin', () => {
         path: 'doc.txt',
         content_type: 'text',
         content: 'hello',
-        overwrite: false,
       }, {});
 
       expect(mocks.documentAdd).toHaveBeenCalledWith(expect.objectContaining({
@@ -425,6 +424,7 @@ describe('ZeroEntropy OpenCode plugin', () => {
         path: 'doc.txt',
         content: { type: 'text', text: 'hello' },
       }));
+      expect(mocks.documentAdd).toHaveBeenCalledWith(expect.not.objectContaining({ overwrite: expect.anything() }));
       expect(parseOutput(result)).toMatchObject({ success: true, path: 'doc.txt', status: 'indexed' });
     });
 
@@ -456,26 +456,11 @@ describe('ZeroEntropy OpenCode plugin', () => {
         content_type: 'text-pages',
         content: 'fallback',
         pages: ['p1', 'p2'],
-        overwrite: false,
       }, {});
 
       expect(mocks.documentAdd).toHaveBeenCalledWith(expect.objectContaining({
         content: { type: 'text-pages', pages: ['p1', 'p2'] },
       }));
-    });
-
-    it('omits unsupported overwrite parameter even when requested', async () => {
-      mocks.documentAdd.mockResolvedValueOnce({});
-
-      await tools.zeroentropy_index.execute({
-        collection_name: 'kb',
-        path: 'doc.txt',
-        content_type: 'text',
-        content: 'replacement',
-        overwrite: true,
-      }, {});
-
-      expect(mocks.documentAdd).toHaveBeenCalledWith(expect.not.objectContaining({ overwrite: true }));
     });
 
     it('handles 409 conflict', async () => {
@@ -486,7 +471,6 @@ describe('ZeroEntropy OpenCode plugin', () => {
         path: 'doc.txt',
         content_type: 'text',
         content: 'duplicate',
-        overwrite: false,
       }, {});
 
       expect(parseOutput(result)).toMatchObject({ status: 409, retryable: false });
@@ -523,12 +507,14 @@ describe('ZeroEntropy OpenCode plugin', () => {
   });
 
   describe('zeroentropy_status', () => {
-    it('returns document status', async () => {
-      mocks.documentStatus.mockResolvedValueOnce({ status: 'indexed', last_updated: '2026-05-20T00:00:00Z' });
+    it('returns document status via getInfo with the real envelope', async () => {
+      mocks.documentGetInfo.mockResolvedValueOnce({
+        document: { index_status: 'indexed', last_updated: '2026-05-20T00:00:00Z' },
+      });
 
       const result = await tools.zeroentropy_status.execute({ collection_name: 'kb', path: 'doc.txt' }, {});
 
-      expect(mocks.documentStatus).toHaveBeenCalledWith({ collection_name: 'kb', path: 'doc.txt' });
+      expect(mocks.documentGetInfo).toHaveBeenCalledWith({ collection_name: 'kb', path: 'doc.txt' });
       expect(parseOutput(result)).toEqual({
         status: 'indexed',
         index_status: 'indexed',
@@ -536,6 +522,29 @@ describe('ZeroEntropy OpenCode plugin', () => {
         path: 'doc.txt',
         collection_name: 'kb',
       });
+    });
+
+    it('normalizes not_indexed to pending', async () => {
+      mocks.documentGetInfo.mockResolvedValueOnce({
+        document: { index_status: 'not_indexed', last_updated: null },
+      });
+
+      const result = await tools.zeroentropy_status.execute({ collection_name: 'kb', path: 'pending.txt' }, {});
+
+      expect(parseOutput(result)).toMatchObject({
+        status: 'pending',
+        index_status: 'not_indexed',
+      });
+    });
+
+    it('normalizes indexing_failed to failed', async () => {
+      mocks.documentGetInfo.mockResolvedValueOnce({
+        document: { index_status: 'indexing_failed' },
+      });
+
+      const result = await tools.zeroentropy_status.execute({ collection_name: 'kb', path: 'bad.txt' }, {});
+
+      expect(parseOutput(result)).toMatchObject({ status: 'failed', index_status: 'indexing_failed' });
     });
   });
 
@@ -581,6 +590,21 @@ describe('ZeroEntropy OpenCode plugin', () => {
 
       expect(mocks.documentAdd).not.toHaveBeenCalled();
       expect(parseOutput(result)).toEqual({ success_count: 0, failed_count: 0, errors: [] });
+    });
+
+    it('forwards pages for text-pages documents', async () => {
+      mocks.documentAdd.mockResolvedValue({});
+
+      await tools.zeroentropy_batch.execute({
+        collection_name: 'kb',
+        documents: [
+          { path: 'paged.txt', content: 'fallback', content_type: 'text-pages', pages: ['p1', 'p2'] },
+        ],
+      }, {});
+
+      expect(mocks.documentAdd).toHaveBeenCalledWith(expect.objectContaining({
+        content: { type: 'text-pages', pages: ['p1', 'p2'] },
+      }));
     });
   });
 

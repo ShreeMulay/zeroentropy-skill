@@ -77,7 +77,7 @@ function getErrorSuggestion(status?: number): string | undefined {
     case 403:
       return 'Check ZeroEntropy credentials and permissions.';
     case 409:
-      return 'Resource already exists or conflicts with current state. Use overwrite where available or choose a different path/name.';
+      return 'Resource already exists or conflicts with current state. Delete the existing resource and recreate it, or choose a different path/name (the API does not support overwrite).';
     case 429:
       return 'Rate limited after retries. Reduce request size or try again later.';
     default:
@@ -135,7 +135,10 @@ function errorOutput(error: StructuredError) {
 
 function normalizeIndexStatus(indexStatus?: string): 'indexed' | 'pending' | 'failed' {
   if (indexStatus === 'indexed') return 'indexed';
-  if (indexStatus === 'parsing_failed' || indexStatus === 'indexing_failed') return 'failed';
+  if (indexStatus === 'parsing_failed' || indexStatus === 'indexing_failed' || indexStatus === 'failed') {
+    return 'failed';
+  }
+  // not_indexed, indexing, parsing, undefined, etc. → still in progress
   return 'pending';
 }
 
@@ -323,7 +326,6 @@ export const ZeroEntropyPlugin: Plugin = async (ctx) => {
           content: z.string().min(1).max(500_000).describe('Text content or base64-encoded binary'),
           pages: z.array(z.string().min(1)).optional().describe('For text-pages content type: array of page strings'),
           metadata: z.record(z.string(), z.any()).optional().describe('Metadata dict. Use list: prefix for array fields (e.g., list:tags)'),
-          overwrite: z.boolean().default(false).describe('Replace if document already exists'),
         },
         async execute(args, context) {
           let content: any;
@@ -461,13 +463,11 @@ export const ZeroEntropyPlugin: Plugin = async (ctx) => {
         async execute(args, context) {
           const documents = (zclient as any).documents;
           const result = await withRetry(async () => {
+            // SDK exposes documents.getInfo; keep get_info as a defensive fallback.
             if (typeof documents?.getInfo === 'function') {
               return documents.getInfo({ collection_name: args.collection_name, path: args.path });
             }
-            if (typeof documents?.status === 'function') {
-              return documents.status({ collection_name: args.collection_name, path: args.path });
-            }
-            return documents.get({ collection_name: args.collection_name, path: args.path });
+            return documents.get_info({ collection_name: args.collection_name, path: args.path });
           });
 
           if (!result.ok) return errorOutput(result.error);
@@ -497,6 +497,7 @@ export const ZeroEntropyPlugin: Plugin = async (ctx) => {
             path: z.string().min(1),
             content: z.string().min(1).max(500_000),
             content_type: z.enum(['text' as const, 'text-pages' as const, 'text-pages-unordered' as const, 'auto' as const]),
+            pages: z.array(z.string().min(1)).optional(),
             metadata: z.record(z.string(), z.any()).optional(),
           })).max(100).describe('Documents to index'),
         },
@@ -511,10 +512,10 @@ export const ZeroEntropyPlugin: Plugin = async (ctx) => {
                 content = { type: 'text' as const, text: document.content };
                 break;
               case 'text-pages':
-                content = { type: 'text-pages' as const, pages: [document.content] };
+                content = { type: 'text-pages' as const, pages: document.pages || [document.content] };
                 break;
               case 'text-pages-unordered':
-                content = { type: 'text-pages-unordered' as const, pages: [document.content] };
+                content = { type: 'text-pages-unordered' as const, pages: document.pages || [document.content] };
                 break;
               case 'auto':
                 content = { type: 'auto' as const, base64_data: document.content };
