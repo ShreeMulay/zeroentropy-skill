@@ -1,0 +1,20 @@
+when:
+  - event: [push, pull_request]
+    branch: main
+
+steps:
+  validate-skill:
+    image: python:3.11
+    commands:
+      - pip install pyyaml
+      - python tests/test_skill_lint.py
+      - python -c "import json; json.load(open('skill.json'))"
+      - python -c "import json; [json.load(open(f)) for f in __import__('glob').glob('schemas/*.json')]"
+
+  test-plugin:
+    image: node:20
+    commands:
+      - cd plugin
+      - npm install
+      - npm run build
+      - npm test
