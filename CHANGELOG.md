@@ -5,6 +5,15 @@ All notable changes to this skill will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.2] - 2026-05-30
+
+### Fixed
+- **Retry semantics narrowed**: `withRetry` no longer retries every status-less error. It now retries only genuine transient network errors (by `code`: ECONNRESET, ETIMEDOUT, ECONNREFUSED, ENOTFOUND, EAI_AGAIN, etc., or matching message patterns) plus 429/5xx. Programmer errors (TypeError) and other unexpected failures now fail fast instead of wasting ~15s on retries that mask the real error.
+- **SDK method-probe order**: `list_collections` now calls the real `getList` first (was probing non-existent `get_list` first).
+
+### Changed
+- Extracted shared `buildContent()` helper used by `zeroentropy_index` and `zeroentropy_batch`, removing duplicated content-switch logic and divergence risk.
+
 ## [1.1.1] - 2026-05-25
 
 ### Fixed

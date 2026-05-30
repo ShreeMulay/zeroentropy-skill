@@ -56,11 +56,51 @@ function getErrorStatus(error: any): number | undefined {
   return statusMatch ? Number(statusMatch[1]) : undefined;
 }
 
+// Transient network conditions worth retrying when no HTTP status is present.
+const TRANSIENT_NETWORK_CODES = new Set([
+  'ECONNRESET',
+  'ETIMEDOUT',
+  'ECONNREFUSED',
+  'ENOTFOUND',
+  'EAI_AGAIN',
+  'EPIPE',
+  'ENETUNREACH',
+  'UND_ERR_CONNECT_TIMEOUT',
+  'UND_ERR_SOCKET',
+]);
+
+const TRANSIENT_MESSAGE_PATTERN = new RegExp(
+  [
+    'ECONNRESET',
+    'ETIMEDOUT',
+    'ECONNREFUSED',
+    'ENOTFOUND',
+    'EAI_AGAIN',
+    'socket hang up',
+    'network',
+    'timed? ?out',
+    'fetch failed',
+  ].join('|'),
+  'i'
+);
+
+function isTransientNetworkError(error: any): boolean {
+  const code = error?.code ?? error?.cause?.code;
+  if (typeof code === 'string' && TRANSIENT_NETWORK_CODES.has(code)) return true;
+
+  const message = String(error?.message ?? '');
+  return TRANSIENT_MESSAGE_PATTERN.test(message);
+}
+
 function isRetryableError(error: any): boolean {
   const status = getErrorStatus(error);
-  // Retry on 429 (rate limit), 5xx (server errors), and network errors without status
-  if (status === undefined) return true;
-  return status === 429 || (typeof status === 'number' && status >= 500 && status < 600);
+  if (status !== undefined) {
+    // Retry on 429 (rate limit) and 5xx (server errors); fail fast on 4xx.
+    return status === 429 || (status >= 500 && status < 600);
+  }
+  // No HTTP status: only retry genuine transient network errors, not
+  // programmer errors (TypeError, etc.) or other unexpected failures.
+  return isTransientNetworkError(error);
 }
 
 function getErrorMessage(error: any): string {
@@ -161,6 +201,27 @@ function normalizeMetadata(
   }
 
   return normalized;
+}
+
+type ContentType = 'text' | 'text-pages' | 'text-pages-unordered' | 'auto';
+
+/**
+ * Build the ZeroEntropy document content object from a content_type + raw
+ * content (+ optional pages). Shared by zeroentropy_index and zeroentropy_batch
+ * to guarantee identical behavior across single and batch indexing.
+ */
+function buildContent(contentType: ContentType, content: string, pages?: string[]): any {
+  switch (contentType) {
+    case 'text-pages':
+      return { type: 'text-pages' as const, pages: pages || [content] };
+    case 'text-pages-unordered':
+      return { type: 'text-pages-unordered' as const, pages: pages || [content] };
+    case 'auto':
+      return { type: 'auto' as const, base64_data: content };
+    case 'text':
+    default:
+      return { type: 'text' as const, text: content };
+  }
 }
 
 function documentAddParams(input: {
@@ -328,23 +389,7 @@ export const ZeroEntropyPlugin: Plugin = async (ctx) => {
           metadata: z.record(z.string(), z.any()).optional().describe('Metadata dict. Use list: prefix for array fields (e.g., list:tags)'),
         },
         async execute(args, context) {
-          let content: any;
-          switch (args.content_type) {
-            case 'text':
-              content = { type: 'text' as const, text: args.content };
-              break;
-            case 'text-pages':
-              content = { type: 'text-pages' as const, pages: args.pages || [args.content] };
-              break;
-            case 'text-pages-unordered':
-              content = { type: 'text-pages-unordered' as const, pages: args.pages || [args.content] };
-              break;
-            case 'auto':
-              content = { type: 'auto' as const, base64_data: args.content };
-              break;
-            default:
-              content = { type: 'text' as const, text: args.content };
-          }
+          const content = buildContent(args.content_type, args.content, args.pages);
 
           const result = await withRetry(() =>
             zclient.documents.add(documentAddParams({
@@ -435,8 +480,9 @@ export const ZeroEntropyPlugin: Plugin = async (ctx) => {
         async execute(args, context) {
           const collections = (zclient as any).collections;
           const result = await withRetry(async () => {
-            if (typeof collections?.get_list === 'function') return collections.get_list({});
+            // Real SDK method is getList; others are defensive fallbacks.
             if (typeof collections?.getList === 'function') return collections.getList({});
+            if (typeof collections?.get_list === 'function') return collections.get_list({});
             if (typeof collections?.list === 'function') return collections.list();
             return collections.getAll();
           });
@@ -506,21 +552,7 @@ export const ZeroEntropyPlugin: Plugin = async (ctx) => {
           let successCount = 0;
 
           for (const document of args.documents) {
-            let content: any;
-            switch (document.content_type) {
-              case 'text':
-                content = { type: 'text' as const, text: document.content };
-                break;
-              case 'text-pages':
-                content = { type: 'text-pages' as const, pages: document.pages || [document.content] };
-                break;
-              case 'text-pages-unordered':
-                content = { type: 'text-pages-unordered' as const, pages: document.pages || [document.content] };
-                break;
-              case 'auto':
-                content = { type: 'auto' as const, base64_data: document.content };
-                break;
-            }
+            const content = buildContent(document.content_type, document.content, document.pages);
 
             const result = await withRetry(() =>
               zclient.documents.add(documentAddParams({

@@ -45,7 +45,6 @@ vi.mock('zeroentropy', () => ({
       add: mocks.collectionAdd,
       delete: mocks.collectionDelete,
       getList: mocks.collectionGetList,
-      get_list: mocks.collectionGetList,
     },
   })),
 }));
@@ -609,8 +608,10 @@ describe('ZeroEntropy OpenCode plugin', () => {
   });
 
   describe('edge cases', () => {
-    it('handles network error without status as retryable', async () => {
-      mocks.topSnippets.mockRejectedValue(new Error('ECONNRESET'));
+    it('retries transient network error identified by code (ECONNRESET)', async () => {
+      const netErr = new Error('socket hang up');
+      (netErr as Error & { code: string }).code = 'ECONNRESET';
+      mocks.topSnippets.mockRejectedValue(netErr);
 
       const result = await tools.zeroentropy_search.execute({
         collection_name: 'kb',
@@ -620,7 +621,49 @@ describe('ZeroEntropy OpenCode plugin', () => {
       }, {});
 
       expect(mocks.topSnippets).toHaveBeenCalledTimes(5);
-      expect(parseOutput(result)).toMatchObject({ error: 'ECONNRESET', retryable: true, attempts: 5 });
+      expect(parseOutput(result)).toMatchObject({ retryable: true, attempts: 5 });
+    });
+
+    it('retries transient network error identified by message (ETIMEDOUT)', async () => {
+      mocks.topSnippets.mockRejectedValue(new Error('request to https://api failed, reason: ETIMEDOUT'));
+
+      const result = await tools.zeroentropy_search.execute({
+        collection_name: 'kb',
+        query: 'timeout',
+        k: 1,
+        query_type: 'snippets',
+      }, {});
+
+      expect(mocks.topSnippets).toHaveBeenCalledTimes(5);
+      expect(parseOutput(result)).toMatchObject({ retryable: true, attempts: 5 });
+    });
+
+    it('does NOT retry a programmer error (TypeError) without status', async () => {
+      mocks.topSnippets.mockRejectedValue(new TypeError("Cannot read properties of undefined (reading 'x')"));
+
+      const result = await tools.zeroentropy_search.execute({
+        collection_name: 'kb',
+        query: 'bug',
+        k: 1,
+        query_type: 'snippets',
+      }, {});
+
+      expect(mocks.topSnippets).toHaveBeenCalledTimes(1);
+      expect(parseOutput(result)).toMatchObject({ retryable: false, attempts: 1 });
+    });
+
+    it('does NOT retry a generic no-status error', async () => {
+      mocks.topSnippets.mockRejectedValue(new Error('Something unexpected happened'));
+
+      const result = await tools.zeroentropy_search.execute({
+        collection_name: 'kb',
+        query: 'generic',
+        k: 1,
+        query_type: 'snippets',
+      }, {});
+
+      expect(mocks.topSnippets).toHaveBeenCalledTimes(1);
+      expect(parseOutput(result)).toMatchObject({ retryable: false, attempts: 1 });
     });
   });
 });
