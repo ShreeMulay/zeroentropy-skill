@@ -1,5 +1,5 @@
 import { Plugin, tool } from '@opencode-ai/plugin';
-import { ZeroEntropy } from 'zeroentropy';
+import { ZeroEntropy, APIConnectionError } from 'zeroentropy';
 
 function safeStringify(obj: unknown): string {
   try {
@@ -51,8 +51,11 @@ function getErrorStatus(error: any): number | undefined {
   if (typeof error?.statusCode === 'number') return error.statusCode;
   if (typeof error?.response?.status === 'number') return error.response.status;
 
+  // Fallback: only treat a LEADING 3-digit code as a status (e.g. the SDK's
+  // "400 {...detail...}" message format). Avoids mis-reading arbitrary numbers
+  // inside the message body (e.g. "search returned 404 results").
   const message = String(error?.message ?? '');
-  const statusMatch = message.match(/\b(4\d{2}|5\d{2})\b/);
+  const statusMatch = message.match(/^\s*([45]\d{2})\b/);
   return statusMatch ? Number(statusMatch[1]) : undefined;
 }
 
@@ -69,6 +72,9 @@ const TRANSIENT_NETWORK_CODES = new Set([
   'UND_ERR_SOCKET',
 ]);
 
+// Narrow, explicit phrases that reliably indicate a transient transport
+// failure. Deliberately excludes broad words like "network" or a bare
+// "timed out" which can appear in unrelated application errors.
 const TRANSIENT_MESSAGE_PATTERN = new RegExp(
   [
     'ECONNRESET',
@@ -77,17 +83,23 @@ const TRANSIENT_MESSAGE_PATTERN = new RegExp(
     'ENOTFOUND',
     'EAI_AGAIN',
     'socket hang up',
-    'network',
-    'timed? ?out',
     'fetch failed',
+    'connection error',
+    'network (?:error|timeout|connection)',
   ].join('|'),
   'i'
 );
 
 function isTransientNetworkError(error: any): boolean {
+  // Primary signal: the SDK's own connection-error classes (status=undefined),
+  // which also covers APIConnectionTimeoutError via inheritance.
+  if (error instanceof APIConnectionError) return true;
+
+  // Fallback: raw socket errors carry a Node error code.
   const code = error?.code ?? error?.cause?.code;
   if (typeof code === 'string' && TRANSIENT_NETWORK_CODES.has(code)) return true;
 
+  // Last resort: narrow, explicit transient phrases in the message.
   const message = String(error?.message ?? '');
   return TRANSIENT_MESSAGE_PATTERN.test(message);
 }

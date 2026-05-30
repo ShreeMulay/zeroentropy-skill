@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { APIConnectionError, APIConnectionTimeoutError } from 'zeroentropy';
 
 const mocks = vi.hoisted(() => {
   const topDocuments = vi.fn();
@@ -26,28 +27,34 @@ const mocks = vi.hoisted(() => {
   };
 });
 
-vi.mock('zeroentropy', () => ({
-  ZeroEntropy: vi.fn(() => ({
-    queries: {
-      topDocuments: mocks.topDocuments,
-      topPages: mocks.topPages,
-      topSnippets: mocks.topSnippets,
-    },
-    models: {
-      embed: mocks.embed,
-      rerank: mocks.rerank,
-    },
-    documents: {
-      add: mocks.documentAdd,
-      getInfo: mocks.documentGetInfo,
-    },
-    collections: {
-      add: mocks.collectionAdd,
-      delete: mocks.collectionDelete,
-      getList: mocks.collectionGetList,
-    },
-  })),
-}));
+vi.mock('zeroentropy', async () => {
+  // Preserve the real error classes (APIConnectionError, etc.) so
+  // instanceof-based transient detection works under test.
+  const actual = await vi.importActual<typeof import('zeroentropy')>('zeroentropy');
+  return {
+    ...actual,
+    ZeroEntropy: vi.fn(() => ({
+      queries: {
+        topDocuments: mocks.topDocuments,
+        topPages: mocks.topPages,
+        topSnippets: mocks.topSnippets,
+      },
+      models: {
+        embed: mocks.embed,
+        rerank: mocks.rerank,
+      },
+      documents: {
+        add: mocks.documentAdd,
+        getInfo: mocks.documentGetInfo,
+      },
+      collections: {
+        add: mocks.collectionAdd,
+        delete: mocks.collectionDelete,
+        getList: mocks.collectionGetList,
+      },
+    })),
+  };
+});
 
 vi.mock('@opencode-ai/plugin', () => {
   const chain = () => ({
@@ -664,6 +671,67 @@ describe('ZeroEntropy OpenCode plugin', () => {
 
       expect(mocks.topSnippets).toHaveBeenCalledTimes(1);
       expect(parseOutput(result)).toMatchObject({ retryable: false, attempts: 1 });
+    });
+
+    it('retries an SDK APIConnectionError (instanceof detection)', async () => {
+      mocks.topSnippets.mockRejectedValue(new APIConnectionError({ message: 'Connection error.' }));
+
+      const result = await tools.zeroentropy_search.execute({
+        collection_name: 'kb',
+        query: 'conn error',
+        k: 1,
+        query_type: 'snippets',
+      }, {});
+
+      expect(mocks.topSnippets).toHaveBeenCalledTimes(5);
+      expect(parseOutput(result)).toMatchObject({ retryable: true, attempts: 5 });
+    });
+
+    it('retries an SDK APIConnectionTimeoutError (subclass)', async () => {
+      mocks.topSnippets.mockRejectedValue(new APIConnectionTimeoutError());
+
+      const result = await tools.zeroentropy_search.execute({
+        collection_name: 'kb',
+        query: 'timeout subclass',
+        k: 1,
+        query_type: 'snippets',
+      }, {});
+
+      expect(mocks.topSnippets).toHaveBeenCalledTimes(5);
+      expect(parseOutput(result)).toMatchObject({ retryable: true, attempts: 5 });
+    });
+
+    it('does NOT retry a non-network error whose message merely contains "timed out"', async () => {
+      mocks.topSnippets.mockRejectedValue(new Error('Configuration timed out waiting for user input'));
+
+      const result = await tools.zeroentropy_search.execute({
+        collection_name: 'kb',
+        query: 'false positive',
+        k: 1,
+        query_type: 'snippets',
+      }, {});
+
+      expect(mocks.topSnippets).toHaveBeenCalledTimes(1);
+      expect(parseOutput(result)).toMatchObject({ retryable: false, attempts: 1 });
+    });
+
+    it('does NOT mis-extract an HTTP status from arbitrary numbers in the message', async () => {
+      // "404 results" must NOT be read as a 404 status; with no real status and
+      // no transient signal, this should fail fast as a generic error.
+      mocks.topSnippets.mockRejectedValue(new Error('search returned 404 results found'));
+
+      const result = await tools.zeroentropy_search.execute({
+        collection_name: 'kb',
+        query: 'status regex',
+        k: 1,
+        query_type: 'snippets',
+      }, {});
+
+      expect(mocks.topSnippets).toHaveBeenCalledTimes(1);
+      const out = parseOutput(result);
+      expect(out).toMatchObject({ retryable: false, attempts: 1 });
+      // A status must NOT have been mis-extracted from "404 results".
+      expect(out.status).toBeUndefined();
     });
   });
 });

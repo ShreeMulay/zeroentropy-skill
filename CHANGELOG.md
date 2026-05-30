@@ -5,6 +5,16 @@ All notable changes to this skill will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.3] - 2026-05-30
+
+### Fixed
+- **Robust transient-error detection**: `withRetry` now identifies transient failures via the SDK's `APIConnectionError`/`APIConnectionTimeoutError` classes (instanceof) plus Node socket `code`, instead of a broad message regex. A non-network error whose message merely contains "timed out"/"network" no longer triggers spurious retries.
+- **Status mis-extraction**: `getErrorStatus` message fallback now only matches a LEADING 3-digit code (e.g. the SDK's `"400 {detail}"` format), so arbitrary numbers in an error body (e.g. "search returned 404 results") are no longer mistaken for an HTTP status.
+
+### Added
+- **Real-Zod schema tests** (`tests/schema.test.ts`): 14 tests asserting the `.max(128/100/500_000)` input limits, `.min(1)` non-empty checks, and `.enum()` content_type validation actually reject bad input (the plugin mock previously stubbed Zod away).
+- Retry edge-case tests for `APIConnectionError`/timeout (retry) and the "timed out waiting for user input" false-positive (fail fast). Suite now 54 tests.
+
 ## [1.1.2] - 2026-05-30
 
 ### Fixed
