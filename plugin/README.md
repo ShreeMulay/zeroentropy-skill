@@ -21,7 +21,7 @@ Then add to your `opencode.json`:
 
 ```json
 {
-  "plugins": [
+  "plugin": [
     "zeroentropy-opencode-plugin"
   ]
 }
@@ -39,7 +39,7 @@ Then add to `opencode.json`:
 
 ```json
 {
-  "plugins": [
+  "plugin": [
     "/path/to/zeroentropy-skill/plugin"
   ]
 }
@@ -105,7 +105,7 @@ Add a single document to a collection for indexing.
   content_type: "text",
   content: "This NDA covers...",
   metadata: {
-    tags: ["legal", "nda"],   // arrays auto-normalized to list:tags
+    tags: ["legal", "nda"],   // plugin-only: arrays auto-normalized to list:tags
     date: "2024-01-15"
   }
 }

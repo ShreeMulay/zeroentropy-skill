@@ -1,3 +1,5 @@
+import time
+
 from zeroentropy import ZeroEntropy, ConflictError
 
 zclient = ZeroEntropy()
@@ -44,4 +46,21 @@ for doc in documents:
     except ConflictError:
         print(f"Already exists: {doc['path']}")
 
-print("\nIndexing complete. Documents ready for querying.")
+print("\nWaiting for documents to finish indexing...")
+for doc in documents:
+    for _ in range(30):
+        status = zclient.documents.get_info(
+            collection_name=COLLECTION_NAME,
+            path=doc["path"],
+        )
+        index_status = status.document.index_status
+        if index_status == "indexed":
+            print(f"Ready: {doc['path']}")
+            break
+        if index_status in ("parsing_failed", "indexing_failed"):
+            raise RuntimeError(f"Indexing failed for {doc['path']}: {index_status}")
+        time.sleep(1)
+    else:
+        raise TimeoutError(f"Timed out waiting for {doc['path']} to index")
+
+print("\nIndexing complete. Documents are indexed and queryable.")

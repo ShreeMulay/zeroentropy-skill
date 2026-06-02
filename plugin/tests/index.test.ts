@@ -62,6 +62,8 @@ vi.mock('@opencode-ai/plugin', () => {
     default: vi.fn(() => chain()),
     min: vi.fn(() => chain()),
     max: vi.fn(() => chain()),
+    int: vi.fn(() => chain()),
+    refine: vi.fn(() => chain()),
     optional: vi.fn(() => chain()),
   });
 
@@ -71,6 +73,7 @@ vi.mock('@opencode-ai/plugin', () => {
     boolean: vi.fn(chain),
     any: vi.fn(chain),
     enum: vi.fn(chain),
+    union: vi.fn(chain),
     array: vi.fn(chain),
     object: vi.fn(chain),
     record: vi.fn(chain),
@@ -130,11 +133,56 @@ describe('ZeroEntropy OpenCode plugin', () => {
   beforeEach(async () => {
     vi.resetModules();
     vi.clearAllMocks();
+    process.env.ZEROENTROPY_API_KEY = 'test-api-key';
+    delete process.env.ZEROENTROPY_MAX_RETRIES;
     vi.stubGlobal('setTimeout', vi.fn((callback: () => void) => {
       callback();
       return 0 as never;
     }));
     tools = await getTools();
+  });
+
+  describe('configuration safety', () => {
+    it('imports and initializes without ZEROENTROPY_API_KEY, then returns a structured missing-key tool error', async () => {
+      delete process.env.ZEROENTROPY_API_KEY;
+      mocks.topSnippets.mockResolvedValueOnce({ results: [] });
+
+      vi.resetModules();
+      await expect(import('../src/index')).resolves.toBeDefined();
+      tools = await getTools();
+
+      const result = await tools.zeroentropy_search.execute({
+        collection_name: 'kb',
+        query: 'ckd staging',
+        k: 1,
+        query_type: 'snippets',
+      }, {});
+
+      expect(mocks.topSnippets).not.toHaveBeenCalled();
+      expect(parseOutput(result)).toMatchObject({
+        error: expect.stringMatching(/ZEROENTROPY_API_KEY/i),
+        retryable: false,
+        attempts: 0,
+        suggestion: expect.stringMatching(/ZEROENTROPY_API_KEY/i),
+      });
+    });
+
+    it('defaults safely when ZEROENTROPY_MAX_RETRIES is invalid and still performs the API call', async () => {
+      process.env.ZEROENTROPY_MAX_RETRIES = 'abc';
+      vi.resetModules();
+      tools = await getTools();
+      mocks.topDocuments.mockResolvedValueOnce({ results: [{ path: 'doc.md' }] });
+
+      const result = await tools.zeroentropy_search.execute({
+        collection_name: 'kb',
+        query: 'retry config',
+        k: 1,
+        query_type: 'documents',
+      }, {});
+
+      expect(mocks.topDocuments).toHaveBeenCalledTimes(1);
+      expect(parseOutput(result)).toEqual({ results: [{ path: 'doc.md' }], count: 1 });
+    });
   });
 
   describe('zeroentropy_search', () => {
@@ -202,6 +250,87 @@ describe('ZeroEntropy OpenCode plugin', () => {
         results: [{ path: 'doc.md', snippet: 'precise answer', score: 0.95 }],
         count: 1,
       });
+    });
+
+    it('requests snippet document metadata and includes document_results in output', async () => {
+      mocks.topSnippets.mockResolvedValueOnce({
+        results: [{ path: 'doc.md', snippet: 'answer', score: 0.95 }],
+        document_results: [{ path: 'doc.md', score: 0.95, metadata: { tag: 'renal' } }],
+      });
+
+      const result = await tools.zeroentropy_search.execute({
+        collection_name: 'kb',
+        query: 'bp target',
+        k: 1,
+        query_type: 'snippets',
+        include_metadata: true,
+      }, {});
+
+      expect(mocks.topSnippets).toHaveBeenCalledWith(expect.objectContaining({
+        include_document_metadata: true,
+      }));
+      expect(parseOutput(result)).toEqual({
+        results: [{ path: 'doc.md', snippet: 'answer', score: 0.95 }],
+        document_results: [{ path: 'doc.md', score: 0.95, metadata: { tag: 'renal' } }],
+        count: 1,
+      });
+    });
+
+    it('includes page document_results in output and forwards latency_mode', async () => {
+      mocks.topPages.mockResolvedValueOnce({
+        results: [{ path: 'guide.md', page_index: 2, content: 'Page text', score: 0.9 }],
+        document_results: [{ path: 'guide.md', score: 0.9 }],
+      });
+
+      const result = await tools.zeroentropy_search.execute({
+        collection_name: 'kb',
+        query: 'albuminuria',
+        k: 1,
+        query_type: 'pages',
+        include_content: true,
+        latency_mode: 'high',
+      }, {});
+
+      expect(mocks.topPages).toHaveBeenCalledWith(expect.objectContaining({ latency_mode: 'high' }));
+      expect(parseOutput(result)).toEqual({
+        results: [{ path: 'guide.md', page_index: 2, content: 'Page text', score: 0.9 }],
+        document_results: [{ path: 'guide.md', score: 0.9 }],
+        count: 1,
+      });
+    });
+
+    it('forwards latency_mode for document searches', async () => {
+      mocks.topDocuments.mockResolvedValueOnce({ results: [{ path: 'doc.md', score: 0.98 }] });
+
+      await tools.zeroentropy_search.execute({
+        collection_name: 'kb',
+        query: 'ckd staging',
+        k: 1,
+        query_type: 'documents',
+        latency_mode: 'low',
+      }, {});
+
+      expect(mocks.topDocuments).toHaveBeenCalledWith(expect.objectContaining({ latency_mode: 'low' }));
+    });
+
+    it('rejects k above query-type-specific runtime limits', async () => {
+      const snippetResult = await tools.zeroentropy_search.execute({
+        collection_name: 'kb',
+        query: 'too many snippets',
+        k: 129,
+        query_type: 'snippets',
+      }, {});
+      const pageResult = await tools.zeroentropy_search.execute({
+        collection_name: 'kb',
+        query: 'too many pages',
+        k: 1025,
+        query_type: 'pages',
+      }, {});
+
+      expect(mocks.topSnippets).not.toHaveBeenCalled();
+      expect(mocks.topPages).not.toHaveBeenCalled();
+      expect(parseOutput(snippetResult)).toMatchObject({ status: 400, retryable: false, attempts: 0 });
+      expect(parseOutput(pageResult)).toMatchObject({ status: 400, retryable: false, attempts: 0 });
     });
 
     it('handles 429 rate limit with retry', async () => {
@@ -313,12 +442,12 @@ describe('ZeroEntropy OpenCode plugin', () => {
       const result = await tools.zeroentropy_embed.execute({
         texts: ['one text'],
         input_type: 'query',
-        dimensions: 3,
+        dimensions: 2560,
         encoding_format: 'float',
       }, {});
 
       expect(mocks.embed).toHaveBeenCalledWith(expect.objectContaining({ input: ['one text'], input_type: 'query' }));
-      expect(parseOutput(result)).toEqual({ embeddings: [[0.1, 0.2, 0.3]], count: 1, dimensions: 3 });
+      expect(parseOutput(result)).toEqual({ embeddings: [[0.1, 0.2, 0.3]], count: 1, dimensions: 2560 });
     });
 
     it('generates embeddings for multiple texts', async () => {
@@ -327,12 +456,12 @@ describe('ZeroEntropy OpenCode plugin', () => {
       const result = await tools.zeroentropy_embed.execute({
         texts: ['first', 'second'],
         input_type: 'document',
-        dimensions: 1,
+        dimensions: 1280,
         encoding_format: 'float',
       }, {});
 
       expect(mocks.embed).toHaveBeenCalledWith(expect.objectContaining({ input: ['first', 'second'] }));
-      expect(parseOutput(result)).toEqual({ embeddings: [[1], [2]], count: 2, dimensions: 1 });
+      expect(parseOutput(result)).toEqual({ embeddings: [[1], [2]], count: 2, dimensions: 1280 });
     });
 
     it('handles different dimensions', async () => {
@@ -341,12 +470,12 @@ describe('ZeroEntropy OpenCode plugin', () => {
       const result = await tools.zeroentropy_embed.execute({
         texts: ['small vector'],
         input_type: 'query',
-        dimensions: 2,
+        dimensions: 640,
         encoding_format: 'float',
       }, {});
 
-      expect(mocks.embed).toHaveBeenCalledWith(expect.objectContaining({ dimensions: 2 }));
-      expect(parseOutput(result).dimensions).toBe(2);
+      expect(mocks.embed).toHaveBeenCalledWith(expect.objectContaining({ dimensions: 640 }));
+      expect(parseOutput(result).dimensions).toBe(640);
     });
 
     it('handles rate limit with retry', async () => {
@@ -355,7 +484,7 @@ describe('ZeroEntropy OpenCode plugin', () => {
       const result = await tools.zeroentropy_embed.execute({
         texts: ['retry'],
         input_type: 'query',
-        dimensions: 1,
+        dimensions: 2560,
         encoding_format: 'float',
       }, {});
 
@@ -369,12 +498,12 @@ describe('ZeroEntropy OpenCode plugin', () => {
       const result = await tools.zeroentropy_embed.execute({
         texts: 'hello',
         input_type: 'query',
-        dimensions: 1,
+        dimensions: 2560,
         encoding_format: 'float',
       }, {});
 
       expect(mocks.embed).toHaveBeenCalledWith(expect.objectContaining({ input: ['hello'] }));
-      expect(parseOutput(result)).toEqual({ embeddings: [[0.1]], count: 1, dimensions: 1 });
+      expect(parseOutput(result)).toEqual({ embeddings: [[0.1]], count: 1, dimensions: 2560 });
     });
   });
 
@@ -431,7 +560,8 @@ describe('ZeroEntropy OpenCode plugin', () => {
         content: { type: 'text', text: 'hello' },
       }));
       expect(mocks.documentAdd).toHaveBeenCalledWith(expect.not.objectContaining({ overwrite: expect.anything() }));
-      expect(parseOutput(result)).toMatchObject({ success: true, path: 'doc.txt', status: 'indexed' });
+      expect(parseOutput(result)).toMatchObject({ success: true, path: 'doc.txt', status: 'accepted' });
+      expect(parseOutput(result).status).not.toBe('indexed');
     });
 
     it('normalizes metadata arrays with list: prefix for API compatibility', async () => {
@@ -495,9 +625,16 @@ describe('ZeroEntropy OpenCode plugin', () => {
 
     it('deletes collection', async () => {
       mocks.collectionDelete.mockResolvedValueOnce({});
+      const context = { ask: vi.fn().mockResolvedValueOnce(true) };
 
-      const result = await tools.zeroentropy_delete_collection.execute({ collection_name: 'kb' }, {});
+      const result = await tools.zeroentropy_delete_collection.execute({ collection_name: 'kb' }, context);
 
+      expect(context.ask).toHaveBeenCalledWith(expect.objectContaining({
+        permission: 'zeroentropy.delete_collection',
+        patterns: ['kb'],
+        metadata: expect.objectContaining({ collection_name: 'kb', action: 'delete_collection' }),
+      }));
+      expect(context.ask.mock.invocationCallOrder[0]).toBeLessThan(mocks.collectionDelete.mock.invocationCallOrder[0]);
       expect(mocks.collectionDelete).toHaveBeenCalledWith({ collection_name: 'kb' });
       expect(parseOutput(result)).toEqual({ success: true, action: 'delete', collection_name: 'kb' });
     });
@@ -588,14 +725,14 @@ describe('ZeroEntropy OpenCode plugin', () => {
       });
     });
 
-    it('handles an empty documents array', async () => {
+    it('rejects an empty documents array', async () => {
       const result = await tools.zeroentropy_batch.execute({
         collection_name: 'kb',
         documents: [],
       }, {});
 
       expect(mocks.documentAdd).not.toHaveBeenCalled();
-      expect(parseOutput(result)).toEqual({ success_count: 0, failed_count: 0, errors: [] });
+      expect(parseOutput(result)).toMatchObject({ status: 400, retryable: false, attempts: 0 });
     });
 
     it('forwards pages for text-pages documents', async () => {

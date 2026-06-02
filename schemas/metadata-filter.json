@@ -12,19 +12,19 @@
       {
         "type": "object",
         "properties": {
-          "$eq": { "type": "string" },
-          "$ne": { "type": "string" },
-          "$gt": { "type": "string" },
-          "$gte": { "type": "string" },
-          "$lt": { "type": "string" },
-          "$lte": { "type": "string" },
+          "$eq": { "type": ["string", "number", "boolean"] },
+          "$ne": { "type": ["string", "number", "boolean"] },
+          "$gt": { "type": ["string", "number"] },
+          "$gte": { "type": ["string", "number"] },
+          "$lt": { "type": ["string", "number"] },
+          "$lte": { "type": ["string", "number"] },
           "$in": {
             "type": "array",
-            "items": { "type": "string" }
+            "items": { "type": ["string", "number", "boolean"] }
           },
           "$nin": {
             "type": "array",
-            "items": { "type": "string" }
+            "items": { "type": ["string", "number", "boolean"] }
           }
         },
         "additionalProperties": false

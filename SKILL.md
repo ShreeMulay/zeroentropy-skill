@@ -7,10 +7,10 @@ metadata:
   category: data
   domain: search
   tools: zeroentropy, zembed, zerank, zsearch
-  version: "1.1.0"
+  version: "1.1.4"
 ---
 
-> ZeroEntropy Skill v1.1.0 — API: v1 — Last verified: 2026-05-25
+> ZeroEntropy Skill v1.1.4 — API: v1 — Last verified: 2026-06-02
 
 # ZeroEntropy Agent Skill
 
@@ -87,7 +87,7 @@ If you're using OpenCode, you can install this skill alongside a lightweight plu
 npx skills add github:ShreeMulay/zeroentropy-skill
 
 # Optional: Install the OpenCode plugin (adds native zeroentropy tools)
-# Add to your opencode.json plugins array:
+# Add to your opencode.json plugin array:
 # "zeroentropy-opencode-plugin"
 ```
 
@@ -306,7 +306,8 @@ context = "\n\n".join([s.content for s in top_snippets])
 |---|---|
 | **`ConflictError` (409)** | Re-indexing the same `path` raises 409. The current live API reports `overwrite` as unavailable, so handle explicitly: skip, delete/recreate intentionally, or use a different deterministic path. |
 | **Rate limits (429)** | Free tier: 500k bytes/min (fast), 5M (slow). Implement exponential backoff with jitter. Batch: ≤128 embed, ≤100 rerank per call. |
-| **Latency modes** | Default is `"high"` (better recall). `"low"` is faster but may skip stages. Interactive UI → `"low"`; batch eval → `"high"`. |
+| **Embedding/rerank latency** | `latency` uses `"fast"` or `"slow"`. `"fast"` is subsecond with lower quota; `"slow"` has higher quota and higher latency. |
+| **Search latency mode** | Search `latency_mode` uses `"low"` (default, faster) or `"high"` (more accurate, slower). Interactive UI → `"low"`; batch eval → `"high"`. |
 | **Token truncation** | Inputs exceeding max token limits are silently truncated. Log lengths before submission. |
 | **Filter syntax** | Wrong operators return empty results, not errors. Validate against the metadata filter schema before querying. |
 

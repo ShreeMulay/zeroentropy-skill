@@ -1,5 +1,37 @@
-import { describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { z } from 'zod';
+
+async function getToolDefinitions() {
+  vi.doMock('@opencode-ai/plugin', () => {
+    const tool = vi.fn((definition) => ({
+      ...definition,
+      inputSchema: typeof definition.args?.safeParse === 'function'
+        ? definition.args
+        : z.object(definition.args),
+    }));
+    tool.schema = z;
+
+    return { tool };
+  });
+
+  vi.doMock('zeroentropy', () => ({
+    APIConnectionError: class APIConnectionError extends Error {},
+    ZeroEntropy: vi.fn(() => ({
+      queries: {},
+      models: {},
+      documents: {},
+      collections: {},
+    })),
+  }));
+
+  const { default: ZeroEntropyPlugin } = await import('../src/index');
+  const plugin = await ZeroEntropyPlugin({} as never);
+  return plugin.tool as Record<string, { inputSchema: z.ZodTypeAny }>;
+}
+
+function expectInvalid(schema: z.ZodTypeAny, input: unknown) {
+  expect(schema.safeParse(input).success).toBe(false);
+}
 
 /**
  * These tests exercise REAL Zod schemas (not the no-op plugin mock used in
@@ -8,6 +40,53 @@ import { z } from 'zod';
  * src/index.ts so a regression that weakens a limit fails CI.
  */
 describe('plugin input-validation schemas (real Zod)', () => {
+  beforeEach(() => {
+    vi.resetModules();
+    vi.clearAllMocks();
+  });
+
+  describe('actual plugin schemas', () => {
+    it('rejects unsupported embed dimensions', async () => {
+      const tools = await getToolDefinitions();
+
+      expectInvalid(tools.zeroentropy_embed.inputSchema, {
+        texts: ['query'],
+        input_type: 'query',
+        dimensions: 123,
+        encoding_format: 'float',
+      });
+    });
+
+    it('rejects k above the global document limit', async () => {
+      const tools = await getToolDefinitions();
+      const schema = tools.zeroentropy_search.inputSchema;
+
+      expectInvalid(schema, {
+        collection_name: 'kb',
+        query: 'too many documents',
+        query_type: 'documents',
+        k: 2049,
+      });
+    });
+
+    it('rejects invalid rerank top_n values', async () => {
+      const tools = await getToolDefinitions();
+      const schema = tools.zeroentropy_rerank.inputSchema;
+
+      expectInvalid(schema, { query: 'q', documents: ['a', 'b'], top_n: 0 });
+      expectInvalid(schema, { query: 'q', documents: ['a', 'b'], top_n: 101 });
+    });
+
+    it('rejects empty batch documents', async () => {
+      const tools = await getToolDefinitions();
+
+      expectInvalid(tools.zeroentropy_batch.inputSchema, {
+        collection_name: 'kb',
+        documents: [],
+      });
+    });
+  });
+
   describe('embed texts .max(128)', () => {
     const schema = z.array(z.string().min(1)).max(128);
 

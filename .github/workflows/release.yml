@@ -19,12 +19,47 @@ jobs:
       - name: Validate version
         run: |
           TAG=${GITHUB_REF#refs/tags/}
-          VERSION=$(node -p "require('./skill.json').version")
+          SKILL_JSON_VERSION=$(node -p "require('./skill.json').version")
+          ROOT_PACKAGE_VERSION=$(node -p "require('./package.json').version")
+          PLUGIN_PACKAGE_VERSION=$(node -p "require('./plugin/package.json').version")
+          LOCK_VERSION=$(node -p "require('./package-lock.json').version")
+          SKILL_MD_VERSION=$(node -e "const fs=require('fs'); const m=fs.readFileSync('SKILL.md','utf8').match(/version:\\s*[\"']?(\\d+\\.\\d+\\.\\d+)/); if(!m) process.exit(1); console.log(m[1])")
+          VERSION="$SKILL_JSON_VERSION"
           if [ "$TAG" != "v$VERSION" ]; then
             echo "Tag $TAG does not match skill.json version v$VERSION"
             exit 1
           fi
-          echo "Version validated: $TAG"
+          for pair in \
+            "package.json:$ROOT_PACKAGE_VERSION" \
+            "plugin/package.json:$PLUGIN_PACKAGE_VERSION" \
+            "package-lock.json:$LOCK_VERSION" \
+            "SKILL.md:$SKILL_MD_VERSION"; do
+            SOURCE=${pair%%:*}
+            VALUE=${pair#*:}
+            if [ "$VALUE" != "$VERSION" ]; then
+              echo "$SOURCE version $VALUE does not match skill.json version $VERSION"
+              exit 1
+            fi
+          done
+          echo "Version validated across all sources: $TAG"
+
+      - name: Package release assets
+        run: |
+          TAG=${GITHUB_REF#refs/tags/}
+          tar -czf "zeroentropy-skill-${TAG}.tar.gz" \
+            SKILL.md \
+            skill.json \
+            README.md \
+            CHANGELOG.md \
+            LICENSE \
+            recipes \
+            schemas \
+            examples \
+            plugin/README.md \
+            plugin/package.json \
+            plugin/package-lock.json \
+            plugin/tsconfig.json \
+            plugin/src
       
       - name: Create Release
         uses: softprops/action-gh-release@v1
@@ -33,6 +68,7 @@ jobs:
             SKILL.md
             skill.json
             README.md
+            zeroentropy-skill-${{ github.ref_name }}.tar.gz
           generate_release_notes: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

@@ -5,6 +5,24 @@ All notable changes to this skill will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.4] - 2026-06-02
+
+### Fixed
+- **Plugin startup safety**: the OpenCode plugin no longer instantiates the ZeroEntropy SDK at module import time; missing `ZEROENTROPY_API_KEY` now returns a structured tool error instead of breaking plugin load.
+- **Retry configuration**: invalid `ZEROENTROPY_MAX_RETRIES` values now default safely instead of skipping API calls.
+- **Search API contract**: plugin search now sends endpoint-specific params, including `include_document_metadata` for snippets, forwards `latency_mode` for document/page searches, and preserves `document_results` in page/snippet responses.
+- **Async indexing semantics**: `zeroentropy_index` now reports accepted/pending semantics instead of claiming documents are immediately indexed.
+- **OpenCode config docs**: plugin installation examples now use the singular `plugin` key.
+- **Standalone indexing examples**: Python and TypeScript examples now poll document status before claiming query readiness.
+
+### Added
+- Permission prompt via `context.ask` before `zeroentropy_delete_collection` deletes a remote collection.
+- Real-schema and repository validation tests for version drift, plugin lockfile presence, metadata filter numeric comparisons, OpenCode config examples, and async-indexing docs.
+
+### Changed
+- Version metadata aligned to 1.1.4 across skill/package manifests and lockfiles.
+- Woodpecker plugin CI now uses `npm ci`; release workflow validates all version sources and packages full skill assets.
+
 ## [1.1.3] - 2026-05-30
 
 ### Fixed

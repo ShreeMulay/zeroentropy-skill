@@ -3,6 +3,27 @@ import { ZeroEntropy } from 'zeroentropy';
 const zclient = new ZeroEntropy();
 const COLLECTION_NAME = "example_contracts";
 
+async function waitForDocument(path: string, timeoutSeconds = 30) {
+    const start = Date.now();
+    while (Date.now() - start < timeoutSeconds * 1000) {
+        const status = await zclient.documents.getInfo({
+            collection_name: COLLECTION_NAME,
+            path,
+        });
+        const indexStatus = status.document.index_status;
+
+        if (indexStatus === "indexed") {
+            console.log(`Ready: ${path}`);
+            return;
+        }
+        if (indexStatus === "parsing_failed" || indexStatus === "indexing_failed") {
+            throw new Error(`Indexing failed for ${path}: ${indexStatus}`);
+        }
+        await new Promise(r => setTimeout(r, 1000));
+    }
+    throw new Error(`Timed out waiting for ${path} to index`);
+}
+
 async function main() {
     // Create collection (handle if already exists)
     try {
@@ -56,7 +77,12 @@ async function main() {
         }
     }
 
-    console.log("\nIndexing complete. Documents ready for querying.");
+    console.log("\nWaiting for documents to finish indexing...");
+    for (const doc of documents) {
+        await waitForDocument(doc.path);
+    }
+
+    console.log("\nIndexing complete. Documents are indexed and queryable.");
 }
 
 main().catch(console.error);

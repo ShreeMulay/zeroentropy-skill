@@ -23,12 +23,43 @@ function safeStringify(obj: unknown): string {
  */
 
 const z = tool.schema;
-const zclient = new ZeroEntropy();
 
-const MAX_RETRIES = Math.min(
-  Number(process.env.ZEROENTROPY_MAX_RETRIES ?? 4),
-  10
-);
+const DEFAULT_MAX_RETRIES = 4;
+const MAX_RETRY_LIMIT = 10;
+const VALID_EMBED_DIMENSIONS = [2560, 1280, 640, 320, 160, 80, 40] as const;
+
+let cachedClient: ZeroEntropy | undefined;
+let cachedApiKey: string | undefined;
+
+function parseMaxRetries(value = process.env.ZEROENTROPY_MAX_RETRIES): number {
+  if (value === undefined || value === '') return DEFAULT_MAX_RETRIES;
+
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) return DEFAULT_MAX_RETRIES;
+
+  return Math.max(0, Math.min(Math.trunc(parsed), MAX_RETRY_LIMIT));
+}
+
+function missingApiKeyError(): StructuredError {
+  return {
+    error: 'ZEROENTROPY_API_KEY is not set',
+    retryable: false,
+    attempts: 0,
+    suggestion: 'Set ZEROENTROPY_API_KEY in the environment before using ZeroEntropy plugin tools.',
+  };
+}
+
+function getClient(): RetryResult<ZeroEntropy> {
+  const apiKey = process.env.ZEROENTROPY_API_KEY;
+  if (!apiKey) return { ok: false, error: missingApiKeyError() };
+
+  if (!cachedClient || cachedApiKey !== apiKey) {
+    cachedClient = new ZeroEntropy({ apiKey, maxRetries: 0 });
+    cachedApiKey = apiKey;
+  }
+
+  return { ok: true, data: cachedClient, attempts: 0 };
+}
 
 interface StructuredError {
   error: string;
@@ -139,8 +170,9 @@ function getErrorSuggestion(status?: number): string | undefined {
 
 async function withRetry<T>(operation: () => Promise<T>): Promise<RetryResult<T>> {
   let lastError: any;
+  const maxRetries = parseMaxRetries();
 
-  for (let attempt = 0; attempt <= MAX_RETRIES; attempt += 1) {
+  for (let attempt = 0; attempt <= maxRetries; attempt += 1) {
     try {
       const data = await operation();
       return { ok: true, data, attempts: attempt + 1 };
@@ -161,7 +193,7 @@ async function withRetry<T>(operation: () => Promise<T>): Promise<RetryResult<T>
         };
       }
 
-      if (attempt === MAX_RETRIES) break;
+      if (attempt === maxRetries) break;
       const baseDelay = 1000 * 2 ** attempt;
       const jitteredDelay = baseDelay + Math.random() * 1000;
       await sleep(jitteredDelay);
@@ -175,7 +207,7 @@ async function withRetry<T>(operation: () => Promise<T>): Promise<RetryResult<T>
       error: getErrorMessage(lastError),
       status,
       retryable: true,
-      attempts: MAX_RETRIES + 1,
+      attempts: maxRetries + 1,
       suggestion: getErrorSuggestion(status),
     },
   };
@@ -183,6 +215,37 @@ async function withRetry<T>(operation: () => Promise<T>): Promise<RetryResult<T>
 
 function errorOutput(error: StructuredError) {
   return { output: safeStringify(error) };
+}
+
+function validateSearchK(queryType: 'documents' | 'pages' | 'snippets', k: number): StructuredError | undefined {
+  const limits = { documents: 2048, pages: 1024, snippets: 128 } as const;
+  const max = limits[queryType];
+  if (k >= 1 && k <= max) return undefined;
+
+  return {
+    error: `k must be between 1 and ${max} for ${queryType} searches`,
+    status: 400,
+    retryable: false,
+    attempts: 0,
+    suggestion: `Use k <= ${max} for query_type="${queryType}".`,
+  };
+}
+
+function validateTopN(topN: number | undefined, documentCount: number): StructuredError | undefined {
+  if (topN === undefined) return undefined;
+  if (topN >= 1 && topN <= Math.min(100, documentCount)) return undefined;
+
+  return {
+    error: `top_n must be between 1 and the number of documents (max 100); got ${topN}`,
+    status: 400,
+    retryable: false,
+    attempts: 0,
+    suggestion: 'Use a positive top_n that is not larger than the provided document count.',
+  };
+}
+
+function validationError(error: string, suggestion: string): StructuredError {
+  return { error, status: 400, retryable: false, attempts: 0, suggestion };
 }
 
 function normalizeIndexStatus(indexStatus?: string): 'indexed' | 'pending' | 'failed' {
@@ -266,46 +329,66 @@ export const ZeroEntropyPlugin: Plugin = async (ctx) => {
         args: {
           collection_name: z.string().min(1).describe('Collection name to search'),
           query: z.string().min(1).describe('Natural language search query'),
-          k: z.number().default(10).describe('Number of results (max: 2048 docs, 1024 pages, 128 snippets)'),
+          k: z.number().int().min(1).max(2048).default(10).describe('Number of results (max: 2048 docs, 1024 pages, 128 snippets)'),
           query_type: z.enum(['documents' as const, 'pages' as const, 'snippets' as const]).default('snippets').describe('Granularity level'),
           filter: z.record(z.string(), z.any()).optional().describe('Metadata filter (MongoDB-style). Use list: prefix for array fields.'),
           reranker: z.enum(['zerank-2' as const, 'zerank-1' as const]).optional().describe('Optional reranker to apply'),
           precise_responses: z.boolean().default(false).describe('For snippets: ~200 chars vs ~2000'),
           include_metadata: z.boolean().default(false).describe('Include document metadata'),
           include_content: z.boolean().default(false).describe('Include document/page content'),
+          latency_mode: z.enum(['low' as const, 'high' as const]).optional().describe('For documents/pages: low=faster, high=more accurate'),
         },
         async execute(args, context) {
-          let response;
-          const params = {
-            collection_name: args.collection_name,
-            query: args.query,
-            k: args.k ?? 10,
-            filter: args.filter,
-            reranker: args.reranker,
-            include_metadata: args.include_metadata ?? false,
-            include_content: args.include_content ?? false,
-          };
+          const client = getClient();
+          if (!client.ok) return errorOutput(client.error);
+
+          const queryType = args.query_type ?? 'snippets';
+          const k = args.k ?? 10;
+          const kError = validateSearchK(queryType, k);
+          if (kError) return errorOutput(kError);
 
           const result = await withRetry(async () => {
-            switch (args.query_type ?? 'snippets') {
+            switch (queryType) {
               case 'documents':
-                return zclient.queries.topDocuments(params);
+                return client.data.queries.topDocuments({
+                  collection_name: args.collection_name,
+                  query: args.query,
+                  k,
+                  filter: args.filter,
+                  reranker: args.reranker,
+                  include_metadata: args.include_metadata ?? false,
+                  latency_mode: args.latency_mode,
+                });
               case 'pages':
-                return zclient.queries.topPages(params);
+                return client.data.queries.topPages({
+                  collection_name: args.collection_name,
+                  query: args.query,
+                  k,
+                  filter: args.filter,
+                  include_content: args.include_content ?? false,
+                  include_metadata: args.include_metadata ?? false,
+                  latency_mode: args.latency_mode,
+                });
               default:
-                return zclient.queries.topSnippets({
-                  ...params,
+                return client.data.queries.topSnippets({
+                  collection_name: args.collection_name,
+                  query: args.query,
+                  k,
+                  filter: args.filter,
+                  reranker: args.reranker,
+                  include_document_metadata: args.include_metadata ?? false,
                   precise_responses: args.precise_responses ?? false,
                 });
             }
           });
 
           if (!result.ok) return errorOutput(result.error);
-          response = result.data;
+          const response = result.data;
 
           return {
             output: safeStringify({
               results: response.results,
+              ...('document_results' in response ? { document_results: response.document_results } : {}),
               count: response.results.length,
             }),
           };
@@ -318,16 +401,26 @@ export const ZeroEntropyPlugin: Plugin = async (ctx) => {
       zeroentropy_embed: tool({
         description: `Generate embeddings using zembed-1. Use input_type="query" for user questions and "document" for corpus text.`,
         args: {
-          texts: z.array(z.string().min(1)).max(128).describe('Texts to embed (single string or array)'),
+          texts: z.union([z.string().min(1), z.array(z.string().min(1)).max(128)]).describe('Texts to embed (single string or array)'),
           input_type: z.enum(['query' as const, 'document' as const]).describe('Query or document embedding type'),
-          dimensions: z.number().default(2560).describe('Embedding dimensions (2560, 1280, 640, 320, 160, 80, 40)'),
+          dimensions: z.number().int().refine((value) => VALID_EMBED_DIMENSIONS.includes(value as any), 'Unsupported embedding dimensions').default(2560).describe('Embedding dimensions (2560, 1280, 640, 320, 160, 80, 40)'),
           encoding_format: z.enum(['float' as const, 'base64' as const]).default('float').describe('Output format'),
           latency: z.enum(['fast' as const, 'slow' as const]).optional().describe('fast=subsecond, slow=cheaper'),
         },
         async execute(args, context) {
+          const client = getClient();
+          if (!client.ok) return errorOutput(client.error);
+
           const inputTexts = args.texts;
+          if (!VALID_EMBED_DIMENSIONS.includes((args.dimensions ?? 2560) as any)) {
+            return errorOutput(validationError(
+              `Unsupported embedding dimensions: ${args.dimensions}`,
+              `Use one of: ${VALID_EMBED_DIMENSIONS.join(', ')}.`
+            ));
+          }
+
           const result = await withRetry(() =>
-            zclient.models.embed({
+            client.data.models.embed({
               model: 'zembed-1',
               input: Array.isArray(inputTexts) ? inputTexts : [inputTexts],
               input_type: args.input_type,
@@ -357,13 +450,19 @@ export const ZeroEntropyPlugin: Plugin = async (ctx) => {
         description: `Rerank candidate documents by relevance to a query. Scores are relative (0-1), not absolute probabilities. Use rank ordering, not thresholding.`,
         args: {
           query: z.string().min(1).describe('Search query'),
-          documents: z.array(z.string().min(1)).max(100).describe('Candidate documents to rerank'),
-          top_n: z.number().optional().describe('Return only top N results'),
+          documents: z.array(z.string().min(1)).min(1).max(100).describe('Candidate documents to rerank'),
+          top_n: z.number().int().min(1).max(100).optional().describe('Return only top N results'),
         },
         async execute(args, context) {
+          const client = getClient();
+          if (!client.ok) return errorOutput(client.error);
+
           const docs = args.documents;
+          const topNError = validateTopN(args.top_n, docs.length);
+          if (topNError) return errorOutput(topNError);
+
           const result = await withRetry(() =>
-            zclient.models.rerank({
+            client.data.models.rerank({
               model: 'zerank-2',
               query: args.query,
               documents: Array.isArray(docs) ? docs : [docs],
@@ -401,10 +500,13 @@ export const ZeroEntropyPlugin: Plugin = async (ctx) => {
           metadata: z.record(z.string(), z.any()).optional().describe('Metadata dict. Use list: prefix for array fields (e.g., list:tags)'),
         },
         async execute(args, context) {
+          const client = getClient();
+          if (!client.ok) return errorOutput(client.error);
+
           const content = buildContent(args.content_type, args.content, args.pages);
 
           const result = await withRetry(() =>
-            zclient.documents.add(documentAddParams({
+            client.data.documents.add(documentAddParams({
               collection_name: args.collection_name,
               path: args.path,
               content,
@@ -418,8 +520,8 @@ export const ZeroEntropyPlugin: Plugin = async (ctx) => {
             output: safeStringify({
               success: true,
               path: args.path,
-              status: 'indexed',
-              note: 'Document may take a few seconds to become queryable. Poll status if needed.',
+              status: 'accepted',
+              note: 'Document accepted for indexing. Poll zeroentropy_status until status is indexed before querying.',
             }),
           };
         },
@@ -434,7 +536,10 @@ export const ZeroEntropyPlugin: Plugin = async (ctx) => {
           collection_name: z.string().min(1).describe('Collection name to create'),
         },
         async execute(args, context) {
-          const collections = (zclient as any).collections;
+          const client = getClient();
+          if (!client.ok) return errorOutput(client.error);
+
+          const collections = (client.data as any).collections;
           const result = await withRetry(async () => {
             if (typeof collections?.add === 'function') {
               return collections.add({ collection_name: args.collection_name });
@@ -463,7 +568,24 @@ export const ZeroEntropyPlugin: Plugin = async (ctx) => {
           collection_name: z.string().min(1).describe('Collection name to delete'),
         },
         async execute(args, context) {
-          const collections = (zclient as any).collections;
+          const client = getClient();
+          if (!client.ok) return errorOutput(client.error);
+
+          if (typeof context.ask !== 'function') {
+            return errorOutput(validationError(
+              'zeroentropy_delete_collection requires an OpenCode permission prompt',
+              'Run this tool in an OpenCode context that supports context.ask before deleting collections.'
+            ));
+          }
+
+          await context.ask({
+            permission: 'zeroentropy.delete_collection',
+            patterns: [args.collection_name],
+            always: [],
+            metadata: { collection_name: args.collection_name, action: 'delete_collection' },
+          });
+
+          const collections = (client.data as any).collections;
           const result = await withRetry(async () => {
             if (typeof collections?.delete === 'function') {
               return collections.delete({ collection_name: args.collection_name });
@@ -490,7 +612,10 @@ export const ZeroEntropyPlugin: Plugin = async (ctx) => {
         description: 'List all ZeroEntropy collections available to the configured API key.',
         args: {},
         async execute(args, context) {
-          const collections = (zclient as any).collections;
+          const client = getClient();
+          if (!client.ok) return errorOutput(client.error);
+
+          const collections = (client.data as any).collections;
           const result = await withRetry(async () => {
             // Real SDK method is getList; others are defensive fallbacks.
             if (typeof collections?.getList === 'function') return collections.getList({});
@@ -519,7 +644,10 @@ export const ZeroEntropyPlugin: Plugin = async (ctx) => {
           path: z.string().min(1).describe('Document path to check'),
         },
         async execute(args, context) {
-          const documents = (zclient as any).documents;
+          const client = getClient();
+          if (!client.ok) return errorOutput(client.error);
+
+          const documents = (client.data as any).documents;
           const result = await withRetry(async () => {
             // SDK exposes documents.getInfo; keep get_info as a defensive fallback.
             if (typeof documents?.getInfo === 'function') {
@@ -557,9 +685,19 @@ export const ZeroEntropyPlugin: Plugin = async (ctx) => {
             content_type: z.enum(['text' as const, 'text-pages' as const, 'text-pages-unordered' as const, 'auto' as const]),
             pages: z.array(z.string().min(1)).optional(),
             metadata: z.record(z.string(), z.any()).optional(),
-          })).max(100).describe('Documents to index'),
+          })).min(1).max(100).describe('Documents to index'),
         },
         async execute(args, context) {
+          const client = getClient();
+          if (!client.ok) return errorOutput(client.error);
+
+          if (args.documents.length === 0) {
+            return errorOutput(validationError(
+              'documents must contain at least one document',
+              'Provide 1 to 100 documents for batch indexing.'
+            ));
+          }
+
           const errors: Array<{ path: string; error: StructuredError }> = [];
           let successCount = 0;
 
@@ -567,7 +705,7 @@ export const ZeroEntropyPlugin: Plugin = async (ctx) => {
             const content = buildContent(document.content_type, document.content, document.pages);
 
             const result = await withRetry(() =>
-              zclient.documents.add(documentAddParams({
+              client.data.documents.add(documentAddParams({
                 collection_name: args.collection_name,
                 path: document.path,
                 content,

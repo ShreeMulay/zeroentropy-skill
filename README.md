@@ -23,8 +23,8 @@ Install this skill into any AI agent that supports the [Vercel Agent Skills spec
 # OpenCode
 npx skills add github:ShreeMulay/zeroentropy-skill
 
-# Claude Code (if supported)
-/plugin marketplace add github:ShreeMulay/zeroentropy-skill
+# Claude Code / compatible agents
+git clone https://github.com/ShreeMulay/zeroentropy-skill.git ~/.claude/skills/zeroentropy
 ```
 
 The skill will be discovered automatically by OpenCode, Claude Code, Cursor, GitHub Copilot, and other compatible agents.
@@ -80,7 +80,7 @@ npx skills add github:ShreeMulay/zeroentropy-skill
 # 2. Activate the native plugin (adds zeroentropy_* tools directly)
 # Edit ~/.opencode/config.json:
 {
-  "plugins": [
+  "plugin": [
     "zeroentropy-opencode-plugin"
   ]
 }
@@ -94,10 +94,7 @@ export ZEROENTROPY_API_KEY="your_api_key"
 ### Claude Code
 
 ```bash
-# Install via the skills marketplace
-/plugin marketplace add github:ShreeMulay/zeroentropy-skill
-
-# Or manually copy to the skills directory:
+# Copy to the skills directory:
 git clone https://github.com/ShreeMulay/zeroentropy-skill.git ~/.claude/skills/zeroentropy
 ```
 
