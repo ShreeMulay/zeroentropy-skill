@@ -106,6 +106,18 @@ def test_release_workflow_builds_and_packages_functional_plugin_artifact():
     assert not missing, "Release workflow is missing: " + ", ".join(missing)
 
 
+def test_release_workflow_grants_contents_write_permission_for_github_releases():
+    """GitHub release creation requires GITHUB_TOKEN contents: write permission."""
+    import yaml
+
+    workflow = yaml.safe_load(read_text(ROOT / ".github" / "workflows" / "release.yml"))
+    workflow_permissions = workflow.get("permissions") or {}
+    release_job_permissions = workflow.get("jobs", {}).get("release", {}).get("permissions") or {}
+    contents_permission = release_job_permissions.get("contents") or workflow_permissions.get("contents")
+
+    assert contents_permission == "write", "Release workflow must grant GITHUB_TOKEN contents: write"
+
+
 def test_readme_release_instructions_use_current_version_and_forgejo_first():
     """Release docs should not point at stale tags or GitHub-only pushes."""
     readme = read_text(ROOT / "README.md")
