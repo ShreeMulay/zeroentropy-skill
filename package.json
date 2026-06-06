@@ -1,6 +1,6 @@
 {
   "name": "zeroentropy-skill",
-  "version": "1.1.4",
+  "version": "1.1.5",
   "description": "ZeroEntropy agent skill for embeddings, reranking, and search",
   "private": true,
   "scripts": {
@@ -12,6 +12,6 @@
     "@types/node": "^20.0.0",
     "markdownlint-cli2": "^0.13.0",
     "typescript": "^5.4.0",
-    "zeroentropy": "^0.1.0-alpha.10"
+    "zeroentropy": "0.1.0-alpha.10"
   }
 }

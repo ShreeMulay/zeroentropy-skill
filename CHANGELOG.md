@@ -5,6 +5,21 @@ All notable changes to this skill will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+## [1.1.5] - 2026-06-06
+
+### Fixed
+- **Plugin cancellation safety**: plugin tools now respect OpenCode abort signals before attempts, during retry backoff, and in SDK request options.
+- **Mutation retry semantics**: non-idempotent create/delete/index operations no longer blindly retry after ambiguous retryable failures.
+- **Local input validation**: empty embed arrays, empty page arrays, and unsupported metadata values are rejected locally with structured errors.
+- **CI coverage**: Forgejo/Woodpecker and GitHub CI now run the full root pytest regression suite.
+- **Release packaging**: release artifacts now build and include `plugin/dist`, and version validation covers `plugin/package-lock.json`.
+
+### Changed
+- Version metadata aligned to 1.1.5 across skill/package manifests and lockfiles.
+- Root hygiene improved with broader `.gitignore`, archived stale OpenSpec changes, and Forgejo-first release instructions.
+
 ## [1.1.4] - 2026-06-02
 
 ### Fixed

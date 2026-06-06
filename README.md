@@ -221,10 +221,14 @@ Fast search (zsearch) → Rerank top results (zerank-2) → Return best matches
 
 To create a release (optional, for human visibility):
 ```bash
-# Tag a release on GitHub
-git tag v1.1.0
-git push origin v1.1.0
-# Then create a release on https://github.com/ShreeMulay/zeroentropy-skill/releases
+# Tag the current version after quality gates pass
+git tag v1.1.5
+
+# Push Forgejo first, then the GitHub mirror
+git push forgejo v1.1.5
+git push origin v1.1.5
+
+# GitHub release artifacts are created by .github/workflows/release.yml
 ```
 
 ---

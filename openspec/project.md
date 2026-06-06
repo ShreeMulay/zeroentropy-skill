@@ -27,7 +27,7 @@ The ZeroEntropy Agent Skill is a universal AI agent skill that enables any compa
 - **Examples**: Python 3.11+, TypeScript/Node 20+
 - **SDK Dependencies**: `zeroentropy` (Python), `zeroentropy` (npm)
 - **Testing**: pytest (Python), vitest (TypeScript)
-- **CI/CD**: GitHub Actions
+- **CI/CD**: Woodpecker CI on Forgejo primary; GitHub Actions on mirror
 - **License**: MIT
 
 ## Target Agents

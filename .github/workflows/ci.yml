@@ -41,7 +41,7 @@ jobs:
       
       - name: Install dependencies
         run: |
-          pip install pyyaml
+          pip install pyyaml pytest
       
       - name: Validate SKILL.md structure
         run: python tests/test_skill_lint.py
@@ -53,6 +53,9 @@ jobs:
       - name: Validate schemas
         run: |
           python -c "import json; [json.load(open(f)) for f in __import__('glob').glob('schemas/*.json')]"
+
+      - name: Run root regression tests
+        run: python -m pytest tests/ -q
 
   typecheck-examples:
     runs-on: ubuntu-latest

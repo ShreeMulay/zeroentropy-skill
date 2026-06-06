@@ -14,7 +14,7 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          node-version: '22'
       
       - name: Validate version
         run: |
@@ -23,6 +23,7 @@ jobs:
           ROOT_PACKAGE_VERSION=$(node -p "require('./package.json').version")
           PLUGIN_PACKAGE_VERSION=$(node -p "require('./plugin/package.json').version")
           LOCK_VERSION=$(node -p "require('./package-lock.json').version")
+          PLUGIN_LOCK_VERSION=$(node -p "require('./plugin/package-lock.json').version")
           SKILL_MD_VERSION=$(node -e "const fs=require('fs'); const m=fs.readFileSync('SKILL.md','utf8').match(/version:\\s*[\"']?(\\d+\\.\\d+\\.\\d+)/); if(!m) process.exit(1); console.log(m[1])")
           VERSION="$SKILL_JSON_VERSION"
           if [ "$TAG" != "v$VERSION" ]; then
@@ -33,6 +34,7 @@ jobs:
             "package.json:$ROOT_PACKAGE_VERSION" \
             "plugin/package.json:$PLUGIN_PACKAGE_VERSION" \
             "package-lock.json:$LOCK_VERSION" \
+            "plugin/package-lock.json:$PLUGIN_LOCK_VERSION" \
             "SKILL.md:$SKILL_MD_VERSION"; do
             SOURCE=${pair%%:*}
             VALUE=${pair#*:}
@@ -42,6 +44,12 @@ jobs:
             fi
           done
           echo "Version validated across all sources: $TAG"
+
+      - name: Build plugin
+        run: |
+          cd plugin
+          npm ci
+          npm run build
 
       - name: Package release assets
         run: |
@@ -59,7 +67,8 @@ jobs:
             plugin/package.json \
             plugin/package-lock.json \
             plugin/tsconfig.json \
-            plugin/src
+            plugin/src \
+            plugin/dist
       
       - name: Create Release
         uses: softprops/action-gh-release@v1

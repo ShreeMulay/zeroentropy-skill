@@ -6,13 +6,14 @@ steps:
   validate-skill:
     image: python:3.11
     commands:
-      - pip install pyyaml
+      - pip install pyyaml pytest
       - python tests/test_skill_lint.py
       - python -c "import json; json.load(open('skill.json'))"
       - python -c "import json; [json.load(open(f)) for f in __import__('glob').glob('schemas/*.json')]"
+      - python -m pytest tests/ -q
 
   test-plugin:
-    image: node:20
+    image: node:22
     commands:
       - cd plugin
       - npm ci

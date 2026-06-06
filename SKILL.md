@@ -7,10 +7,10 @@ metadata:
   category: data
   domain: search
   tools: zeroentropy, zembed, zerank, zsearch
-  version: "1.1.4"
+  version: "1.1.5"
 ---
 
-> ZeroEntropy Skill v1.1.4 — API: v1 — Last verified: 2026-06-02
+> ZeroEntropy Skill v1.1.5 — API: v1 — Last verified: 2026-06-06
 
 # ZeroEntropy Agent Skill
 
@@ -399,5 +399,6 @@ All plugin tools implement automatic retry with exponential backoff:
 
 ## Changelog
 
+- **v1.1.5** (2026-06-06): Hardens OpenCode plugin cancellation, mutation retry semantics, metadata/page/embed validation, CI regression coverage, release packaging, and project hygiene.
 - **v1.1.0** (2026-05-25): OpenCode plugin with 9 native tools (search, embed, rerank, index, create/delete/list collection, status, batch), retry with backoff + jitter, metadata `list:` auto-normalization, and live-API hardening.
 - **v1.0.0** (2025-05-19): Initial release. Covers zembed-1, zerank-2, zsearch, metadata filtering, and RAG pipeline recipe.

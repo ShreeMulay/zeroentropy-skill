@@ -1,4 +1,5 @@
 import { Plugin, tool } from '@opencode-ai/plugin';
+import type { ToolContext } from '@opencode-ai/plugin';
 import { ZeroEntropy, APIConnectionError } from 'zeroentropy';
 
 function safeStringify(obj: unknown): string {
@@ -27,6 +28,8 @@ const z = tool.schema;
 const DEFAULT_MAX_RETRIES = 4;
 const MAX_RETRY_LIMIT = 10;
 const VALID_EMBED_DIMENSIONS = [2560, 1280, 640, 320, 160, 80, 40] as const;
+const metadataValueSchema = z.union([z.string(), z.array(z.string().min(1)).min(1)]);
+const metadataSchema = z.record(z.string(), metadataValueSchema);
 
 let cachedClient: ZeroEntropy | undefined;
 let cachedApiKey: string | undefined;
@@ -73,8 +76,49 @@ type RetryResult<T> =
   | { ok: true; data: T; attempts: number }
   | { ok: false; error: StructuredError };
 
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
+function abortError(attempts = 0, reason?: unknown): StructuredError {
+  return {
+    error: reason instanceof Error && reason.message ? `Operation aborted: ${reason.message}` : 'Operation aborted',
+    retryable: false,
+    attempts,
+    suggestion: 'The OpenCode tool run was cancelled before the ZeroEntropy request completed.',
+  };
+}
+
+function isAbortLikeError(error: unknown): boolean {
+  return error instanceof Error && (error.name === 'AbortError' || /aborted|abort/i.test(error.message));
+}
+
+function requestOptions(context?: Partial<ToolContext>): { signal?: AbortSignal } | undefined {
+  return context?.abort ? { signal: context.abort } : undefined;
+}
+
+function sdkCall<T>(
+  method: (body: any, options?: { signal?: AbortSignal }) => Promise<T>,
+  body: any,
+  options?: { signal?: AbortSignal }
+): Promise<T> {
+  return options ? method(body, options) : method(body);
+}
+
+function sdkCallNoBody<T>(
+  method: (options?: { signal?: AbortSignal }) => Promise<T>,
+  options?: { signal?: AbortSignal }
+): Promise<T> {
+  return options ? method(options) : method();
+}
+
+function sleep(ms: number, signal?: AbortSignal): Promise<void> {
+  if (signal?.aborted) return Promise.reject(signal.reason ?? new Error('Operation aborted'));
+
+  return new Promise((resolve, reject) => {
+    const timeout = setTimeout(resolve, ms);
+    const onAbort = () => {
+      clearTimeout(timeout);
+      reject(signal?.reason ?? new Error('Operation aborted'));
+    };
+    signal?.addEventListener('abort', onAbort, { once: true });
+  });
 }
 
 function getErrorStatus(error: any): number | undefined {
@@ -168,18 +212,29 @@ function getErrorSuggestion(status?: number): string | undefined {
   }
 }
 
-async function withRetry<T>(operation: () => Promise<T>): Promise<RetryResult<T>> {
+async function withRetry<T>(
+  operation: (options?: { signal?: AbortSignal }) => Promise<T>,
+  options: { signal?: AbortSignal; retry?: boolean } = {}
+): Promise<RetryResult<T>> {
+  if (options.signal?.aborted) return { ok: false, error: abortError(0, options.signal.reason) };
+
   let lastError: any;
-  const maxRetries = parseMaxRetries();
+  const retryEnabled = options.retry !== false;
+  const maxRetries = retryEnabled ? parseMaxRetries() : 0;
 
   for (let attempt = 0; attempt <= maxRetries; attempt += 1) {
     try {
-      const data = await operation();
+      if (options.signal?.aborted) return { ok: false, error: abortError(attempt, options.signal.reason) };
+      const data = await operation(requestOptions({ abort: options.signal }));
       return { ok: true, data, attempts: attempt + 1 };
     } catch (error: any) {
       lastError = error;
+      if (options.signal?.aborted || isAbortLikeError(error)) {
+        return { ok: false, error: abortError(attempt + 1, error) };
+      }
 
-      if (!isRetryableError(error)) {
+      const retryable = isRetryableError(error);
+      if (!retryable || !retryEnabled) {
         const status = getErrorStatus(error);
         return {
           ok: false,
@@ -188,7 +243,9 @@ async function withRetry<T>(operation: () => Promise<T>): Promise<RetryResult<T>
             status,
             retryable: false,
             attempts: attempt + 1,
-            suggestion: getErrorSuggestion(status),
+            suggestion: !retryEnabled && retryable
+              ? 'Mutation was not retried because the first attempt may have changed remote state. Check ZeroEntropy before retrying manually.'
+              : getErrorSuggestion(status),
           },
         };
       }
@@ -196,7 +253,11 @@ async function withRetry<T>(operation: () => Promise<T>): Promise<RetryResult<T>
       if (attempt === maxRetries) break;
       const baseDelay = 1000 * 2 ** attempt;
       const jitteredDelay = baseDelay + Math.random() * 1000;
-      await sleep(jitteredDelay);
+      try {
+        await sleep(jitteredDelay, options.signal);
+      } catch (abortReason) {
+        return { ok: false, error: abortError(attempt + 1, abortReason) };
+      }
     }
   }
 
@@ -258,7 +319,7 @@ function normalizeIndexStatus(indexStatus?: string): 'indexed' | 'pending' | 'fa
 }
 
 function normalizeMetadata(
-  metadata?: Record<string, unknown>
+  metadata?: Record<string, string | string[]>
 ): Record<string, string | string[]> | undefined {
   if (!metadata) return undefined;
 
@@ -267,15 +328,44 @@ function normalizeMetadata(
   for (const [key, value] of Object.entries(metadata)) {
     if (Array.isArray(value)) {
       const normalizedKey = key.startsWith('list:') ? key : `list:${key}`;
-      normalized[normalizedKey] = value.map(String);
+      normalized[normalizedKey] = value;
       continue;
     }
 
-    if (value === undefined || value === null) continue;
-    normalized[key] = String(value);
+    normalized[key] = value;
   }
 
   return normalized;
+}
+
+function validateMetadata(metadata?: Record<string, unknown>): RetryResult<Record<string, string | string[]> | undefined> {
+  if (!metadata) return { ok: true, data: undefined, attempts: 0 };
+
+  for (const [key, value] of Object.entries(metadata)) {
+    if (typeof value === 'string') continue;
+    if (Array.isArray(value) && value.length > 0 && value.every((item) => typeof item === 'string' && item.length > 0)) continue;
+
+    return {
+      ok: false,
+      error: validationError(
+        `metadata.${key} must be a string or a non-empty string array`,
+        'Use ZeroEntropy metadata values shaped as dict[str, str | list[str]]. Arrays are auto-normalized to list: keys by the plugin.'
+      ),
+    };
+  }
+
+  return { ok: true, data: metadata as Record<string, string | string[]>, attempts: 0 };
+}
+
+function validateContentInput(contentType: ContentType, pages?: string[]): StructuredError | undefined {
+  if ((contentType === 'text-pages' || contentType === 'text-pages-unordered') && pages !== undefined && pages.length === 0) {
+    return validationError(
+      'pages must contain at least one page when provided for page-based content',
+      'Omit pages to use the content fallback, or provide one or more non-empty page strings.'
+    );
+  }
+
+  return undefined;
 }
 
 type ContentType = 'text' | 'text-pages' | 'text-pages-unordered' | 'auto';
@@ -303,7 +393,7 @@ function documentAddParams(input: {
   collection_name: string;
   path: string;
   content: any;
-  metadata?: Record<string, unknown>;
+  metadata?: Record<string, string | string[]>;
 }) {
   const metadata = normalizeMetadata(input.metadata);
   return {
@@ -341,6 +431,7 @@ export const ZeroEntropyPlugin: Plugin = async (ctx) => {
         async execute(args, context) {
           const client = getClient();
           if (!client.ok) return errorOutput(client.error);
+          const options = requestOptions(context);
 
           const queryType = args.query_type ?? 'snippets';
           const k = args.k ?? 10;
@@ -350,7 +441,7 @@ export const ZeroEntropyPlugin: Plugin = async (ctx) => {
           const result = await withRetry(async () => {
             switch (queryType) {
               case 'documents':
-                return client.data.queries.topDocuments({
+                return sdkCall(client.data.queries.topDocuments.bind(client.data.queries), {
                   collection_name: args.collection_name,
                   query: args.query,
                   k,
@@ -358,9 +449,9 @@ export const ZeroEntropyPlugin: Plugin = async (ctx) => {
                   reranker: args.reranker,
                   include_metadata: args.include_metadata ?? false,
                   latency_mode: args.latency_mode,
-                });
+                }, options);
               case 'pages':
-                return client.data.queries.topPages({
+                return sdkCall(client.data.queries.topPages.bind(client.data.queries), {
                   collection_name: args.collection_name,
                   query: args.query,
                   k,
@@ -368,9 +459,9 @@ export const ZeroEntropyPlugin: Plugin = async (ctx) => {
                   include_content: args.include_content ?? false,
                   include_metadata: args.include_metadata ?? false,
                   latency_mode: args.latency_mode,
-                });
+                }, options);
               default:
-                return client.data.queries.topSnippets({
+                return sdkCall(client.data.queries.topSnippets.bind(client.data.queries), {
                   collection_name: args.collection_name,
                   query: args.query,
                   k,
@@ -378,9 +469,9 @@ export const ZeroEntropyPlugin: Plugin = async (ctx) => {
                   reranker: args.reranker,
                   include_document_metadata: args.include_metadata ?? false,
                   precise_responses: args.precise_responses ?? false,
-                });
+                }, options);
             }
-          });
+          }, { signal: context.abort });
 
           if (!result.ok) return errorOutput(result.error);
           const response = result.data;
@@ -401,7 +492,7 @@ export const ZeroEntropyPlugin: Plugin = async (ctx) => {
       zeroentropy_embed: tool({
         description: `Generate embeddings using zembed-1. Use input_type="query" for user questions and "document" for corpus text.`,
         args: {
-          texts: z.union([z.string().min(1), z.array(z.string().min(1)).max(128)]).describe('Texts to embed (single string or array)'),
+          texts: z.union([z.string().min(1), z.array(z.string().min(1)).min(1).max(128)]).describe('Texts to embed (single string or array)'),
           input_type: z.enum(['query' as const, 'document' as const]).describe('Query or document embedding type'),
           dimensions: z.number().int().refine((value) => VALID_EMBED_DIMENSIONS.includes(value as any), 'Unsupported embedding dimensions').default(2560).describe('Embedding dimensions (2560, 1280, 640, 320, 160, 80, 40)'),
           encoding_format: z.enum(['float' as const, 'base64' as const]).default('float').describe('Output format'),
@@ -412,6 +503,12 @@ export const ZeroEntropyPlugin: Plugin = async (ctx) => {
           if (!client.ok) return errorOutput(client.error);
 
           const inputTexts = args.texts;
+          if (Array.isArray(inputTexts) && inputTexts.length === 0) {
+            return errorOutput(validationError(
+              'texts must contain at least one text',
+              'Provide a non-empty string or an array with 1 to 128 non-empty strings.'
+            ));
+          }
           if (!VALID_EMBED_DIMENSIONS.includes((args.dimensions ?? 2560) as any)) {
             return errorOutput(validationError(
               `Unsupported embedding dimensions: ${args.dimensions}`,
@@ -419,16 +516,16 @@ export const ZeroEntropyPlugin: Plugin = async (ctx) => {
             ));
           }
 
-          const result = await withRetry(() =>
-            client.data.models.embed({
+          const result = await withRetry((options) =>
+            sdkCall(client.data.models.embed.bind(client.data.models), {
               model: 'zembed-1',
               input: Array.isArray(inputTexts) ? inputTexts : [inputTexts],
               input_type: args.input_type,
               dimensions: args.dimensions ?? 2560,
               encoding_format: args.encoding_format ?? 'float',
               latency: args.latency,
-            })
-          );
+            }, options)
+          , { signal: context.abort });
 
           if (!result.ok) return errorOutput(result.error);
           const response = result.data;
@@ -461,14 +558,14 @@ export const ZeroEntropyPlugin: Plugin = async (ctx) => {
           const topNError = validateTopN(args.top_n, docs.length);
           if (topNError) return errorOutput(topNError);
 
-          const result = await withRetry(() =>
-            client.data.models.rerank({
+          const result = await withRetry((options) =>
+            sdkCall(client.data.models.rerank.bind(client.data.models), {
               model: 'zerank-2',
               query: args.query,
               documents: Array.isArray(docs) ? docs : [docs],
               top_n: args.top_n,
-            })
-          );
+            }, options)
+          , { signal: context.abort });
 
           if (!result.ok) return errorOutput(result.error);
           const response = result.data;
@@ -496,23 +593,29 @@ export const ZeroEntropyPlugin: Plugin = async (ctx) => {
           path: z.string().min(1).describe('Unique document path (like a filepath)'),
           content_type: z.enum(['text' as const, 'text-pages' as const, 'text-pages-unordered' as const, 'auto' as const]).describe('text=plain text, text-pages=ordered array, text-pages-unordered=independent entries, auto=base64 binary'),
           content: z.string().min(1).max(500_000).describe('Text content or base64-encoded binary'),
-          pages: z.array(z.string().min(1)).optional().describe('For text-pages content type: array of page strings'),
-          metadata: z.record(z.string(), z.any()).optional().describe('Metadata dict. Use list: prefix for array fields (e.g., list:tags)'),
+          pages: z.array(z.string().min(1)).min(1).optional().describe('For text-pages content type: array of page strings'),
+          metadata: metadataSchema.optional().describe('Metadata dict[str, str | list[str]]. Array fields are auto-normalized to list: prefix.'),
         },
         async execute(args, context) {
           const client = getClient();
           if (!client.ok) return errorOutput(client.error);
+          if (context.abort?.aborted) return errorOutput(abortError(0, context.abort.reason));
+
+          const contentError = validateContentInput(args.content_type, args.pages);
+          if (contentError) return errorOutput(contentError);
+          const metadata = validateMetadata(args.metadata);
+          if (!metadata.ok) return errorOutput(metadata.error);
 
           const content = buildContent(args.content_type, args.content, args.pages);
 
-          const result = await withRetry(() =>
-            client.data.documents.add(documentAddParams({
+          const result = await withRetry((options) =>
+            sdkCall(client.data.documents.add.bind(client.data.documents), documentAddParams({
               collection_name: args.collection_name,
               path: args.path,
               content,
-              metadata: args.metadata,
-            }))
-          );
+              metadata: metadata.data,
+            }), options)
+          , { signal: context.abort, retry: false });
 
           if (!result.ok) return errorOutput(result.error);
 
@@ -540,12 +643,12 @@ export const ZeroEntropyPlugin: Plugin = async (ctx) => {
           if (!client.ok) return errorOutput(client.error);
 
           const collections = (client.data as any).collections;
-          const result = await withRetry(async () => {
+          const result = await withRetry(async (options) => {
             if (typeof collections?.add === 'function') {
-              return collections.add({ collection_name: args.collection_name });
+              return sdkCall(collections.add.bind(collections), { collection_name: args.collection_name }, options);
             }
-            return collections.create({ collection_name: args.collection_name });
-          });
+            return sdkCall(collections.create.bind(collections), { collection_name: args.collection_name }, options);
+          }, { signal: context.abort, retry: false });
 
           if (!result.ok) return errorOutput(result.error);
 
@@ -578,20 +681,29 @@ export const ZeroEntropyPlugin: Plugin = async (ctx) => {
             ));
           }
 
-          await context.ask({
-            permission: 'zeroentropy.delete_collection',
-            patterns: [args.collection_name],
-            always: [],
-            metadata: { collection_name: args.collection_name, action: 'delete_collection' },
-          });
+          try {
+            await context.ask({
+              permission: 'zeroentropy.delete_collection',
+              patterns: [args.collection_name],
+              always: [],
+              metadata: { collection_name: args.collection_name, action: 'delete_collection' },
+            });
+          } catch (error) {
+            return errorOutput({
+              error: getErrorMessage(error),
+              retryable: false,
+              attempts: 0,
+              suggestion: 'Deletion was cancelled before contacting ZeroEntropy.',
+            });
+          }
 
           const collections = (client.data as any).collections;
-          const result = await withRetry(async () => {
+          const result = await withRetry(async (options) => {
             if (typeof collections?.delete === 'function') {
-              return collections.delete({ collection_name: args.collection_name });
+              return sdkCall(collections.delete.bind(collections), { collection_name: args.collection_name }, options);
             }
-            return collections.remove({ collection_name: args.collection_name });
-          });
+            return sdkCall(collections.remove.bind(collections), { collection_name: args.collection_name }, options);
+          }, { signal: context.abort, retry: false });
 
           if (!result.ok) return errorOutput(result.error);
 
@@ -616,19 +728,20 @@ export const ZeroEntropyPlugin: Plugin = async (ctx) => {
           if (!client.ok) return errorOutput(client.error);
 
           const collections = (client.data as any).collections;
-          const result = await withRetry(async () => {
+          const result = await withRetry(async (options) => {
             // Real SDK method is getList; others are defensive fallbacks.
-            if (typeof collections?.getList === 'function') return collections.getList({});
-            if (typeof collections?.get_list === 'function') return collections.get_list({});
-            if (typeof collections?.list === 'function') return collections.list();
-            return collections.getAll();
-          });
+            if (typeof collections?.getList === 'function') return sdkCall(collections.getList.bind(collections), {}, options);
+            if (typeof collections?.get_list === 'function') return sdkCall(collections.get_list.bind(collections), {}, options);
+            if (typeof collections?.list === 'function') return sdkCallNoBody(collections.list.bind(collections), options);
+            return sdkCallNoBody(collections.getAll.bind(collections), options);
+          }, { signal: context.abort });
 
           if (!result.ok) return errorOutput(result.error);
+          const response = result.data as any;
 
           return {
             output: safeStringify({
-              collections: result.data?.collection_names ?? result.data?.collections ?? result.data?.results ?? result.data,
+              collections: response?.collection_names ?? response?.collections ?? response?.results ?? response,
             }),
           };
         },
@@ -648,16 +761,17 @@ export const ZeroEntropyPlugin: Plugin = async (ctx) => {
           if (!client.ok) return errorOutput(client.error);
 
           const documents = (client.data as any).documents;
-          const result = await withRetry(async () => {
+          const result = await withRetry(async (options) => {
             // SDK exposes documents.getInfo; keep get_info as a defensive fallback.
             if (typeof documents?.getInfo === 'function') {
-              return documents.getInfo({ collection_name: args.collection_name, path: args.path });
+              return sdkCall(documents.getInfo.bind(documents), { collection_name: args.collection_name, path: args.path }, options);
             }
-            return documents.get_info({ collection_name: args.collection_name, path: args.path });
-          });
+            return sdkCall(documents.get_info.bind(documents), { collection_name: args.collection_name, path: args.path }, options);
+          }, { signal: context.abort });
 
           if (!result.ok) return errorOutput(result.error);
-          const document = result.data?.document ?? result.data;
+          const response = result.data as any;
+          const document = response?.document ?? response;
           const indexStatus = document?.index_status ?? document?.status;
 
           return {
@@ -683,8 +797,8 @@ export const ZeroEntropyPlugin: Plugin = async (ctx) => {
             path: z.string().min(1),
             content: z.string().min(1).max(500_000),
             content_type: z.enum(['text' as const, 'text-pages' as const, 'text-pages-unordered' as const, 'auto' as const]),
-            pages: z.array(z.string().min(1)).optional(),
-            metadata: z.record(z.string(), z.any()).optional(),
+            pages: z.array(z.string().min(1)).min(1).optional(),
+            metadata: metadataSchema.optional(),
           })).min(1).max(100).describe('Documents to index'),
         },
         async execute(args, context) {
@@ -702,16 +816,30 @@ export const ZeroEntropyPlugin: Plugin = async (ctx) => {
           let successCount = 0;
 
           for (const document of args.documents) {
+            if (context.abort?.aborted) {
+              errors.push({ path: document.path, error: abortError(0, context.abort.reason) });
+              break;
+            }
+            const contentError = validateContentInput(document.content_type, document.pages);
+            if (contentError) {
+              errors.push({ path: document.path, error: contentError });
+              continue;
+            }
+            const metadata = validateMetadata(document.metadata);
+            if (!metadata.ok) {
+              errors.push({ path: document.path, error: metadata.error });
+              continue;
+            }
             const content = buildContent(document.content_type, document.content, document.pages);
 
-            const result = await withRetry(() =>
-              client.data.documents.add(documentAddParams({
+            const result = await withRetry((options) =>
+              sdkCall(client.data.documents.add.bind(client.data.documents), documentAddParams({
                 collection_name: args.collection_name,
                 path: document.path,
                 content,
-                metadata: document.metadata,
-              }))
-            );
+                metadata: metadata.data,
+              }), options)
+            , { signal: context.abort, retry: false });
 
             if (result.ok) {
               successCount += 1;

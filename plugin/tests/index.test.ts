@@ -186,6 +186,23 @@ describe('ZeroEntropy OpenCode plugin', () => {
   });
 
   describe('zeroentropy_search', () => {
+    it('forwards OpenCode abort signals to SDK requests', async () => {
+      const controller = new AbortController();
+      mocks.topSnippets.mockResolvedValueOnce({ results: [] });
+
+      await tools.zeroentropy_search.execute({
+        collection_name: 'kb',
+        query: 'abort forwarding',
+        k: 1,
+        query_type: 'snippets',
+      }, { abort: controller.signal });
+
+      expect(mocks.topSnippets).toHaveBeenCalledWith(
+        expect.objectContaining({ collection_name: 'kb', query: 'abort forwarding' }),
+        expect.objectContaining({ signal: controller.signal })
+      );
+    });
+
     it('returns documents with correct structure', async () => {
       mocks.topDocuments.mockResolvedValueOnce({
         results: [{ path: 'doc.md', score: 0.98, metadata: { tag: 'renal' } }],
@@ -436,6 +453,18 @@ describe('ZeroEntropy OpenCode plugin', () => {
   });
 
   describe('zeroentropy_embed', () => {
+    it('rejects an empty text array before calling the API', async () => {
+      const result = await tools.zeroentropy_embed.execute({
+        texts: [],
+        input_type: 'query',
+        dimensions: 2560,
+        encoding_format: 'float',
+      }, {});
+
+      expect(mocks.embed).not.toHaveBeenCalled();
+      expect(parseOutput(result)).toMatchObject({ status: 400, retryable: false, attempts: 0 });
+    });
+
     it('generates embeddings for single text', async () => {
       mocks.embed.mockResolvedValueOnce({ results: [{ embedding: [0.1, 0.2, 0.3] }] });
 
@@ -544,6 +573,65 @@ describe('ZeroEntropy OpenCode plugin', () => {
   });
 
   describe('zeroentropy_index', () => {
+    it('does not start remote indexing when the tool context is already aborted', async () => {
+      const controller = new AbortController();
+      controller.abort();
+
+      const result = await tools.zeroentropy_index.execute({
+        collection_name: 'kb',
+        path: 'aborted.txt',
+        content_type: 'text',
+        content: 'should not upload',
+      }, { abort: controller.signal });
+
+      expect(mocks.documentAdd).not.toHaveBeenCalled();
+      expect(parseOutput(result)).toMatchObject({
+        error: expect.stringMatching(/aborted/i),
+        retryable: false,
+        attempts: 0,
+      });
+    });
+
+    it('does not retry non-idempotent document adds after a retryable server error', async () => {
+      mocks.documentAdd.mockRejectedValue(serverError());
+
+      const result = await tools.zeroentropy_index.execute({
+        collection_name: 'kb',
+        path: 'maybe-written.txt',
+        content_type: 'text',
+        content: 'ambiguous write',
+      }, {});
+
+      expect(mocks.documentAdd).toHaveBeenCalledTimes(1);
+      expect(parseOutput(result)).toMatchObject({ status: 500, retryable: false, attempts: 1 });
+    });
+
+    it('rejects empty text-pages arrays before calling the API', async () => {
+      const result = await tools.zeroentropy_index.execute({
+        collection_name: 'kb',
+        path: 'empty-pages.txt',
+        content_type: 'text-pages',
+        content: 'fallback must not hide empty pages',
+        pages: [],
+      }, {});
+
+      expect(mocks.documentAdd).not.toHaveBeenCalled();
+      expect(parseOutput(result)).toMatchObject({ status: 400, retryable: false, attempts: 0 });
+    });
+
+    it('rejects unsupported metadata values instead of stringifying objects', async () => {
+      const result = await tools.zeroentropy_index.execute({
+        collection_name: 'kb',
+        path: 'bad-metadata.txt',
+        content_type: 'text',
+        content: 'hello metadata',
+        metadata: { nested: { unsafe: true } },
+      }, {});
+
+      expect(mocks.documentAdd).not.toHaveBeenCalled();
+      expect(parseOutput(result)).toMatchObject({ status: 400, retryable: false, attempts: 0 });
+    });
+
     it('indexes text document successfully', async () => {
       mocks.documentAdd.mockResolvedValueOnce({});
 
@@ -637,6 +725,19 @@ describe('ZeroEntropy OpenCode plugin', () => {
       expect(context.ask.mock.invocationCallOrder[0]).toBeLessThan(mocks.collectionDelete.mock.invocationCallOrder[0]);
       expect(mocks.collectionDelete).toHaveBeenCalledWith({ collection_name: 'kb' });
       expect(parseOutput(result)).toEqual({ success: true, action: 'delete', collection_name: 'kb' });
+    });
+
+    it('does not delete collection when the permission prompt is denied', async () => {
+      const context = { ask: vi.fn().mockRejectedValueOnce(new Error('permission denied')) };
+
+      const result = await tools.zeroentropy_delete_collection.execute({ collection_name: 'kb' }, context);
+
+      expect(mocks.collectionDelete).not.toHaveBeenCalled();
+      expect(parseOutput(result)).toMatchObject({
+        error: expect.stringMatching(/permission denied|denied/i),
+        retryable: false,
+        attempts: 0,
+      });
     });
 
     it('lists collections', async () => {
@@ -748,6 +849,22 @@ describe('ZeroEntropy OpenCode plugin', () => {
       expect(mocks.documentAdd).toHaveBeenCalledWith(expect.objectContaining({
         content: { type: 'text-pages', pages: ['p1', 'p2'] },
       }));
+    });
+
+    it('rejects empty page arrays in batch documents before calling the API', async () => {
+      const result = await tools.zeroentropy_batch.execute({
+        collection_name: 'kb',
+        documents: [
+          { path: 'empty-pages.txt', content: 'fallback', content_type: 'text-pages', pages: [] },
+        ],
+      }, {});
+
+      expect(mocks.documentAdd).not.toHaveBeenCalled();
+      expect(parseOutput(result)).toMatchObject({
+        success_count: 0,
+        failed_count: 1,
+        errors: [expect.objectContaining({ path: 'empty-pages.txt' })],
+      });
     });
   });
 

@@ -57,6 +57,53 @@ describe('plugin input-validation schemas (real Zod)', () => {
       });
     });
 
+    it('rejects an empty embed text array', async () => {
+      const tools = await getToolDefinitions();
+
+      expectInvalid(tools.zeroentropy_embed.inputSchema, {
+        texts: [],
+        input_type: 'query',
+        dimensions: 2560,
+        encoding_format: 'float',
+      });
+    });
+
+    it('rejects empty pages arrays for indexing tools', async () => {
+      const tools = await getToolDefinitions();
+
+      expectInvalid(tools.zeroentropy_index.inputSchema, {
+        collection_name: 'kb',
+        path: 'empty-pages.txt',
+        content_type: 'text-pages',
+        content: 'fallback',
+        pages: [],
+      });
+      expectInvalid(tools.zeroentropy_batch.inputSchema, {
+        collection_name: 'kb',
+        documents: [
+          { path: 'empty-pages.txt', content: 'fallback', content_type: 'text-pages', pages: [] },
+        ],
+      });
+    });
+
+    it('rejects non-string metadata values', async () => {
+      const tools = await getToolDefinitions();
+
+      expectInvalid(tools.zeroentropy_index.inputSchema, {
+        collection_name: 'kb',
+        path: 'bad-metadata.txt',
+        content_type: 'text',
+        content: 'hello',
+        metadata: { nested: { unsafe: true } },
+      });
+      expectInvalid(tools.zeroentropy_batch.inputSchema, {
+        collection_name: 'kb',
+        documents: [
+          { path: 'bad-metadata.txt', content: 'hello', content_type: 'text', metadata: { count: 1 } },
+        ],
+      });
+    });
+
     it('rejects k above the global document limit', async () => {
       const tools = await getToolDefinitions();
       const schema = tools.zeroentropy_search.inputSchema;
@@ -88,7 +135,7 @@ describe('plugin input-validation schemas (real Zod)', () => {
   });
 
   describe('embed texts .max(128)', () => {
-    const schema = z.array(z.string().min(1)).max(128);
+    const schema = z.array(z.string().min(1)).min(1).max(128);
 
     it('accepts up to 128 texts', () => {
       expect(() => schema.parse(Array.from({ length: 128 }, (_, i) => `t${i}`))).not.toThrow();
@@ -100,6 +147,10 @@ describe('plugin input-validation schemas (real Zod)', () => {
 
     it('rejects an empty string element', () => {
       expect(() => schema.parse([''])).toThrow();
+    });
+
+    it('rejects an empty array', () => {
+      expect(() => schema.parse([])).toThrow();
     });
   });
 
@@ -120,8 +171,8 @@ describe('plugin input-validation schemas (real Zod)', () => {
       path: z.string().min(1),
       content: z.string().min(1).max(500_000),
       content_type: z.enum(['text', 'text-pages', 'text-pages-unordered', 'auto']),
-      pages: z.array(z.string().min(1)).optional(),
-      metadata: z.record(z.string(), z.any()).optional(),
+      pages: z.array(z.string().min(1)).min(1).optional(),
+      metadata: z.record(z.string(), z.union([z.string(), z.array(z.string()).min(1)])).optional(),
     });
     const schema = z.array(docSchema).max(100);
 
@@ -147,6 +198,15 @@ describe('plugin input-validation schemas (real Zod)', () => {
     it('rejects an empty path', () => {
       expect(() =>
         schema.parse([{ path: '', content: 'x', content_type: 'text' }])
+      ).toThrow();
+    });
+
+    it('rejects empty pages and non-string metadata', () => {
+      expect(() =>
+        schema.parse([{ path: 'a.txt', content: 'x', content_type: 'text-pages', pages: [] }])
+      ).toThrow();
+      expect(() =>
+        schema.parse([{ path: 'a.txt', content: 'x', content_type: 'text', metadata: { nested: { bad: true } } }])
       ).toThrow();
     });
   });
