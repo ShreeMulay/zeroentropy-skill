@@ -213,13 +213,14 @@ Fast search (zsearch) → Rerank top results (zerank-2) → Return best matches
 
 ## Releases & Packages
 
-**No releases or packages needed.** This is a documentation-first skill that agents discover by reading `SKILL.md`.
+This is a documentation-first skill that agents can discover directly from `SKILL.md`, with tagged release artifacts available for pinned installs and human review.
 
 - **Skill distribution:** Via `git clone` or `npx skills add`
-- **Plugin distribution:** Built locally from source after skill install
+- **Plugin distribution:** Built locally from source after skill install, or from the packaged release tarball
 - **Versioning:** Semantic versioning in `skill.json` and `CHANGELOG.md`
+- **Release assets:** `SKILL.md`, `skill.json`, `README.md`, and `zeroentropy-skill-v1.1.5.tar.gz`
 
-To create a release (optional, for human visibility):
+To create the next release:
 ```bash
 # Tag the current version after quality gates pass
 git tag v1.1.5

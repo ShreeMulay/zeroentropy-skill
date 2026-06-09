@@ -118,6 +118,21 @@ def test_release_workflow_grants_contents_write_permission_for_github_releases()
     assert contents_permission == "write", "Release workflow must grant GITHUB_TOKEN contents: write"
 
 
+def test_github_ci_uses_current_node_lts_for_node_jobs():
+    """GitHub CI should match the Node version used by Woodpecker and release builds."""
+    import yaml
+
+    workflow = yaml.safe_load(read_text(ROOT / ".github" / "workflows" / "ci.yml"))
+    node_versions = []
+    for job in workflow.get("jobs", {}).values():
+        for step in job.get("steps", []):
+            if step.get("uses") == "actions/setup-node@v4":
+                node_versions.append(str(step.get("with", {}).get("node-version")))
+
+    assert node_versions, "CI must configure Node.js for Node-based jobs"
+    assert set(node_versions) == {"22"}, f"CI Node versions must all be 22; got {node_versions}"
+
+
 def test_readme_release_instructions_use_current_version_and_forgejo_first():
     """Release docs should not point at stale tags or GitHub-only pushes."""
     readme = read_text(ROOT / "README.md")
@@ -126,6 +141,17 @@ def test_readme_release_instructions_use_current_version_and_forgejo_first():
     assert "v1.1.0" not in release_section, "README release instructions still use stale v1.1.0 tag"
     assert "git push forgejo" in release_section, "Release instructions must push Forgejo first"
     assert "git push origin" in release_section, "Release instructions should also push the GitHub mirror"
+
+
+def test_readme_release_section_matches_actual_packaged_release_artifacts():
+    """README release docs should not say releases are unnecessary after packaging artifacts."""
+    readme = read_text(ROOT / "README.md")
+    release_section = readme.split("## Releases & Packages", 1)[-1]
+
+    assert "No releases or packages needed" not in release_section
+    assert "zeroentropy-skill-v1.1.5.tar.gz" in release_section
+    assert "SKILL.md" in release_section
+    assert "skill.json" in release_section
 
 
 def test_changelog_has_unreleased_section_for_next_changes():
