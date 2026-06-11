@@ -1,6 +1,6 @@
 {
   "name": "zeroentropy-skill",
-  "version": "1.1.5",
+  "version": "1.1.6",
   "description": "ZeroEntropy agent skill for embeddings, reranking, and search",
   "license": "MIT",
   "homepage": "https://github.com/ShreeMulay/zeroentropy-skill",

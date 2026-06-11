@@ -165,11 +165,15 @@ Batch index up to 100 documents in one call. Supports `pages[]` for `text-pages`
 
 ## Error Handling
 
-The plugin automatically handles:
-
-- **Rate limits (429)**: Returns retry guidance with backoff timing
+- **Reads retry automatically**: search/embed/rerank/list/status retry 429, 5xx, and transient network errors with exponential backoff + jitter
+- **Mutations fail fast**: index/batch adds and collection create/delete are not retried after ambiguous failures — check remote state before retrying manually
 - **Conflict errors (409)**: Suggests skip, delete/recreate, or deterministic path changes
-- **Invalid filters**: Validates `list:` prefix for array metadata
+- **Cancellation-aware**: OpenCode abort signals stop pending retries, backoff waits, and in-flight requests
+- **Destructive guard**: `zeroentropy_delete_collection` requires an OpenCode permission prompt before contacting the API
+
+> Note: search `filter` objects are passed to the API as-is. Remember the `list:` prefix for
+> array metadata fields — the plugin normalizes index-time metadata arrays into `list:` keys,
+> but it does not rewrite query filters.
 
 ## Configuration
 

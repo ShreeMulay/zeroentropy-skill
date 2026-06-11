@@ -12,7 +12,7 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).parent.parent
-TARGET_VERSION = "1.1.5"
+TARGET_VERSION = "1.1.6"
 COMPARISON_OPERATORS = ("$gt", "$gte", "$lt", "$lte")
 
 
@@ -144,14 +144,45 @@ def test_readme_release_instructions_use_current_version_and_forgejo_first():
 
 
 def test_readme_release_section_matches_actual_packaged_release_artifacts():
-    """README release docs should not say releases are unnecessary after packaging artifacts."""
+    """README release docs must track the current skill.json version, not a stale pin."""
+    version = read_json(ROOT / "skill.json")["version"]
     readme = read_text(ROOT / "README.md")
     release_section = readme.split("## Releases & Packages", 1)[-1]
 
     assert "No releases or packages needed" not in release_section
-    assert "zeroentropy-skill-v1.1.5.tar.gz" in release_section
+    assert f"zeroentropy-skill-v{version}.tar.gz" in release_section
+    assert f"git tag v{version}" in release_section
     assert "SKILL.md" in release_section
     assert "skill.json" in release_section
+
+
+def test_skill_md_error_handling_documents_mutation_fail_fast():
+    """SKILL.md must not claim every tool auto-retries; mutations fail fast since v1.1.5."""
+    content = read_text(ROOT / "SKILL.md")
+    assert "All plugin tools implement automatic retry" not in content
+
+    error_section = content.split("### Error Handling", 1)[-1].split("## Reference Tables", 1)[0]
+    lower = error_section.lower()
+    assert "fail fast" in lower, "Error Handling must document mutation fail-fast semantics"
+    assert "permission" in lower, "Error Handling must mention the delete_collection permission prompt"
+    assert "abort" in lower, "Error Handling must mention abort/cancellation behavior"
+
+
+def test_plugin_readme_error_handling_is_accurate():
+    """plugin/README must not claim filter list: validation and must document v1.1.5+ semantics."""
+    readme = read_text(ROOT / "plugin" / "README.md")
+    assert "Validates `list:` prefix" not in readme, "Plugin does not validate search filters"
+
+    lower = readme.lower()
+    assert "fail fast" in lower or "not retried" in lower, "README must document mutation fail-fast"
+    assert "permission" in lower, "README must document the delete_collection permission prompt"
+
+
+def test_woodpecker_runs_docs_lint_and_examples_typecheck():
+    """Primary Forgejo CI must match GitHub CI lint/typecheck coverage."""
+    woodpecker = read_text(ROOT / ".woodpecker.yml")
+    assert "npm run lint" in woodpecker, "Woodpecker must run markdown lint"
+    assert "npm run typecheck" in woodpecker, "Woodpecker must typecheck TypeScript examples"
 
 
 def test_changelog_has_unreleased_section_for_next_changes():

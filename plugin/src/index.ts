@@ -112,11 +112,15 @@ function sleep(ms: number, signal?: AbortSignal): Promise<void> {
   if (signal?.aborted) return Promise.reject(signal.reason ?? new Error('Operation aborted'));
 
   return new Promise((resolve, reject) => {
-    const timeout = setTimeout(resolve, ms);
     const onAbort = () => {
       clearTimeout(timeout);
       reject(signal?.reason ?? new Error('Operation aborted'));
     };
+    const timeout = setTimeout(() => {
+      // Avoid accumulating stale listeners on a long-lived shared AbortSignal.
+      signal?.removeEventListener('abort', onAbort);
+      resolve();
+    }, ms);
     signal?.addEventListener('abort', onAbort, { once: true });
   });
 }
@@ -642,13 +646,11 @@ export const ZeroEntropyPlugin: Plugin = async (ctx) => {
           const client = getClient();
           if (!client.ok) return errorOutput(client.error);
 
-          const collections = (client.data as any).collections;
-          const result = await withRetry(async (options) => {
-            if (typeof collections?.add === 'function') {
-              return sdkCall(collections.add.bind(collections), { collection_name: args.collection_name }, options);
-            }
-            return sdkCall(collections.create.bind(collections), { collection_name: args.collection_name }, options);
-          }, { signal: context.abort, retry: false });
+          const collections = client.data.collections;
+          const result = await withRetry(
+            (options) => sdkCall(collections.add.bind(collections), { collection_name: args.collection_name }, options),
+            { signal: context.abort, retry: false }
+          );
 
           if (!result.ok) return errorOutput(result.error);
 
@@ -697,13 +699,11 @@ export const ZeroEntropyPlugin: Plugin = async (ctx) => {
             });
           }
 
-          const collections = (client.data as any).collections;
-          const result = await withRetry(async (options) => {
-            if (typeof collections?.delete === 'function') {
-              return sdkCall(collections.delete.bind(collections), { collection_name: args.collection_name }, options);
-            }
-            return sdkCall(collections.remove.bind(collections), { collection_name: args.collection_name }, options);
-          }, { signal: context.abort, retry: false });
+          const collections = client.data.collections;
+          const result = await withRetry(
+            (options) => sdkCall(collections.delete.bind(collections), { collection_name: args.collection_name }, options),
+            { signal: context.abort, retry: false }
+          );
 
           if (!result.ok) return errorOutput(result.error);
 
@@ -814,10 +814,15 @@ export const ZeroEntropyPlugin: Plugin = async (ctx) => {
 
           const errors: Array<{ path: string; error: StructuredError }> = [];
           let successCount = 0;
+          let skippedCount = 0;
 
-          for (const document of args.documents) {
+          for (let docIndex = 0; docIndex < args.documents.length; docIndex += 1) {
+            const document = args.documents[docIndex];
             if (context.abort?.aborted) {
               errors.push({ path: document.path, error: abortError(0, context.abort.reason) });
+              // Remaining documents were never attempted; report them explicitly
+              // so success + failed + skipped always reconciles with the input.
+              skippedCount = args.documents.length - docIndex - 1;
               break;
             }
             const contentError = validateContentInput(document.content_type, document.pages);
@@ -852,6 +857,7 @@ export const ZeroEntropyPlugin: Plugin = async (ctx) => {
             output: safeStringify({
               success_count: successCount,
               failed_count: errors.length,
+              skipped_count: skippedCount,
               errors,
             }),
           };

@@ -218,16 +218,16 @@ This is a documentation-first skill that agents can discover directly from `SKIL
 - **Skill distribution:** Via `git clone` or `npx skills add`
 - **Plugin distribution:** Built locally from source after skill install, or from the packaged release tarball
 - **Versioning:** Semantic versioning in `skill.json` and `CHANGELOG.md`
-- **Release assets:** `SKILL.md`, `skill.json`, `README.md`, and `zeroentropy-skill-v1.1.5.tar.gz`
+- **Release assets:** `SKILL.md`, `skill.json`, `README.md`, and `zeroentropy-skill-v1.1.6.tar.gz`
 
 To create the next release:
 ```bash
 # Tag the current version after quality gates pass
-git tag v1.1.5
+git tag v1.1.6
 
 # Push Forgejo first, then the GitHub mirror
-git push forgejo v1.1.5
-git push origin v1.1.5
+git push forgejo v1.1.6
+git push origin v1.1.6
 
 # GitHub release artifacts are created by .github/workflows/release.yml
 ```

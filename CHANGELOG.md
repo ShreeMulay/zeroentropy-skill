@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.1.6] - 2026-06-11
+
+### Fixed
+- **Docs/behavior drift**: SKILL.md and plugin README no longer claim all tools auto-retry; they now document read-retry vs mutation fail-fast, abort handling, and the delete permission gate. Removed the false claim that search filters get `list:` validation.
+- **Retry backoff listener leak**: `sleep()` now removes its abort listener when the backoff timer resolves, preventing listener accumulation on long-lived shared AbortSignals.
+- **Batch abort accounting**: aborted `zeroentropy_batch` runs now report `skipped_count` for unattempted documents so `success + failed + skipped` always reconciles with the input size.
+- **Dead SDK fallbacks**: removed nonexistent `collections.create` / `collections.remove` fallback probes.
+
+### Changed
+- Woodpecker CI now runs markdown lint and TypeScript example typecheck (parity with GitHub CI).
+- Repository validation tests renamed to `tests/test_repo_validation.py`; release-docs test now derives the expected tarball name from `skill.json`.
+- `@opencode-ai/plugin` dev/peer dependency refreshed to `^1.17.3`.
+- Version metadata aligned to 1.1.6 across skill/package manifests and lockfiles.
+
 ## [1.1.5] - 2026-06-06
 
 ### Fixed

@@ -805,7 +805,7 @@ describe('ZeroEntropy OpenCode plugin', () => {
       }, {});
 
       expect(mocks.documentAdd).toHaveBeenCalledTimes(2);
-      expect(parseOutput(result)).toEqual({ success_count: 2, failed_count: 0, errors: [] });
+      expect(parseOutput(result)).toEqual({ success_count: 2, failed_count: 0, skipped_count: 0, errors: [] });
     });
 
     it('reports failures', async () => {
@@ -851,6 +851,26 @@ describe('ZeroEntropy OpenCode plugin', () => {
       }));
     });
 
+    it('reports unprocessed documents as skipped when the batch is aborted', async () => {
+      const controller = new AbortController();
+      controller.abort();
+
+      const result = await tools.zeroentropy_batch.execute({
+        collection_name: 'kb',
+        documents: [
+          { path: 'a.txt', content: 'A', content_type: 'text' },
+          { path: 'b.txt', content: 'B', content_type: 'text' },
+          { path: 'c.txt', content: 'C', content_type: 'text' },
+        ],
+      }, { abort: controller.signal });
+
+      expect(mocks.documentAdd).not.toHaveBeenCalled();
+      const out = parseOutput(result);
+      expect(out).toMatchObject({ success_count: 0, failed_count: 1, skipped_count: 2 });
+      expect(out.errors[0].path).toBe('a.txt');
+      expect(out.success_count + out.failed_count + out.skipped_count).toBe(3);
+    });
+
     it('rejects empty page arrays in batch documents before calling the API', async () => {
       const result = await tools.zeroentropy_batch.execute({
         collection_name: 'kb',
@@ -869,6 +889,27 @@ describe('ZeroEntropy OpenCode plugin', () => {
   });
 
   describe('edge cases', () => {
+    it('removes abort listeners added during successful retry backoff', async () => {
+      const controller = new AbortController();
+      const addSpy = vi.spyOn(controller.signal, 'addEventListener');
+      const removeSpy = vi.spyOn(controller.signal, 'removeEventListener');
+      mocks.topSnippets
+        .mockRejectedValueOnce(rateLimitError())
+        .mockResolvedValueOnce({ results: [] });
+
+      await tools.zeroentropy_search.execute({
+        collection_name: 'kb',
+        query: 'listener cleanup',
+        k: 1,
+        query_type: 'snippets',
+      }, { abort: controller.signal });
+
+      const abortAdds = addSpy.mock.calls.filter(([type]) => type === 'abort').length;
+      const abortRemoves = removeSpy.mock.calls.filter(([type]) => type === 'abort').length;
+      expect(abortAdds).toBeGreaterThan(0);
+      expect(abortRemoves).toBe(abortAdds);
+    });
+
     it('retries transient network error identified by code (ECONNRESET)', async () => {
       const netErr = new Error('socket hang up');
       (netErr as Error & { code: string }).code = 'ECONNRESET';

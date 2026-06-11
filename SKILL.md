@@ -7,10 +7,10 @@ metadata:
   category: data
   domain: search
   tools: zeroentropy, zembed, zerank, zsearch
-  version: "1.1.5"
+  version: "1.1.6"
 ---
 
-> ZeroEntropy Skill v1.1.5 — API: v1 — Last verified: 2026-06-06
+> ZeroEntropy Skill v1.1.6 — API: v1 — Last verified: 2026-06-11
 
 # ZeroEntropy Agent Skill
 
@@ -360,11 +360,13 @@ zeroentropy_list_collections({})
 
 ### Error Handling
 
-All plugin tools implement automatic retry with exponential backoff:
-- **429 (Rate Limit)**: Retries 4 times with delays of 1s, 2s, 4s, 8s
-- **5xx (Server Error)**: Retries with same backoff strategy
-- **409 (Conflict)**: Returns structured error with suggestion (no retry)
-- **400 (Bad Request)**: Returns structured error with details (no retry)
+Plugin error behavior depends on whether the operation can be safely repeated:
+
+- **Reads retry automatically** (`search`, `embed`, `rerank`, `list_collections`, `status`): 429, 5xx, and transient network failures retry up to 4 times with exponential backoff + jitter (1s, 2s, 4s, 8s).
+- **Mutations fail fast** (`index`, `batch` document adds, `create_collection`, `delete_collection`): they are never retried automatically, because a failed-looking attempt may already have changed remote state. The structured error suggests checking ZeroEntropy before retrying manually.
+- **409 (Conflict)** / **400 (Bad Request)**: structured error with a suggestion, no retry.
+- **Cancellation**: OpenCode abort signals are honored before attempts, during backoff waits, and inside in-flight SDK requests.
+- **Destructive guard**: `zeroentropy_delete_collection` requires an OpenCode permission prompt (`context.ask`) and fails closed if the prompt is denied or unavailable.
 
 ## Reference Tables
 
@@ -399,6 +401,7 @@ All plugin tools implement automatic retry with exponential backoff:
 
 ## Changelog
 
+- **v1.1.6** (2026-06-11): Corrects error-handling docs (read-retry vs mutation fail-fast), adds Woodpecker lint/typecheck parity, fixes retry-backoff abort-listener cleanup, reports skipped documents on aborted batches, and removes dead SDK fallbacks.
 - **v1.1.5** (2026-06-06): Hardens OpenCode plugin cancellation, mutation retry semantics, metadata/page/embed validation, CI regression coverage, release packaging, and project hygiene.
 - **v1.1.0** (2026-05-25): OpenCode plugin with 9 native tools (search, embed, rerank, index, create/delete/list collection, status, batch), retry with backoff + jitter, metadata `list:` auto-normalization, and live-API hardening.
 - **v1.0.0** (2025-05-19): Initial release. Covers zembed-1, zerank-2, zsearch, metadata filtering, and RAG pipeline recipe.

@@ -3,6 +3,13 @@ when:
     branch: main
 
 steps:
+  lint-docs:
+    image: node:22
+    commands:
+      - npm ci
+      - npm run lint
+      - npm run typecheck
+
   validate-skill:
     image: python:3.11
     commands:

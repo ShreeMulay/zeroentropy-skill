@@ -1,6 +1,6 @@
 {
   "name": "zeroentropy-opencode-plugin",
-  "version": "1.1.5",
+  "version": "1.1.6",
   "description": "OpenCode plugin for ZeroEntropy - adds native search, embed, rerank, and index tools",
   "type": "module",
   "main": "dist/index.js",
@@ -24,14 +24,14 @@
     "zeroentropy": "0.1.0-alpha.10"
   },
   "devDependencies": {
-    "@opencode-ai/plugin": "^1.15.5",
+    "@opencode-ai/plugin": "^1.17.3",
     "@vitest/coverage-v8": "^3.2.4",
     "typescript": "^5.4.0",
     "@types/node": "^20.0.0",
     "vitest": "^3.2.4"
   },
   "peerDependencies": {
-    "@opencode-ai/plugin": "^1.15.5"
+    "@opencode-ai/plugin": "^1.17.3"
   },
   "keywords": [
     "opencode",
