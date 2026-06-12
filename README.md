@@ -1,6 +1,8 @@
 <!-- markdownlint-disable MD033 -->
 <div align="center">
 
+<img src="https://avatars.githubusercontent.com/u/177883875?v=4" alt="ZeroEntropy logo" width="96" height="96">
+
 # 🌀 ZeroEntropy Agent Skill
 
 <p align="center">
@@ -21,18 +23,48 @@
 
 </div>
 
+## 🧠 Why ZeroEntropy?
+
+Most RAG stacks bolt a generalist embedding API onto a generalist LLM and hope for the best. ZeroEntropy ([YC W25](https://www.ycombinator.com/companies/zeroentropy), $4.2M seed led by Initialized Capital[^1]) makes the opposite bet: **small, retrieval-specialized models beat giant generalist ones at search** — and the receipts back it up:
+
+- 🏆 **Top-ranked reranking** — `zerank-2` scores **NDCG@10 of 0.78 across 29 datasets**[^2], and in Agentset's independent head-to-head it posts **ELO 1638 vs Cohere Rerank 3.5's 1451**, winning **57.2%** of matchups[^3]
+- ⚡ **Built for production latency** — mean rerank latency **265ms vs Cohere's 392ms**, with only **2.7%** of requests over 500ms (vs 14.3% for Cohere, 70.8% for Jina)[^2][^3]
+- 🌍 **Best-in-class embeddings** — `zembed-1` beats OpenAI Large, Cohere v4, Voyage, BGE-M3, and Gemini Embeddings by **up to +7% Recall@100**, with majority-non-English training data for true multilingual RAG[^4]
+- 🔓 **Open weights, no lock-in** — both models are released on [Hugging Face](https://huggingface.co/zeroentropy) and AWS Marketplace; `zembed-1` scales from 2560 down to 40 dimensions with int8/binary quantization[^4]
+- 💰 **Half the price** — $0.025/1M tokens vs $0.050 for Cohere reranking[^5], and Assembled measured a **2.8x cost reduction** after moving 100% of reranking traffic over[^6]
+- 🩺 **Proven in high-stakes domains** — Vera Health retrieves across **60M+ medical papers** with ZeroEntropy and hit **97.5% on USMLE Steps 1–3** while cutting irrelevant citations by >90%[^7]; Mem0, Sendbird, and Profound run it in production[^8]
+
+| Metric | zerank-2 | Cohere Rerank 3.5 |
+|---|---|---|
+| Head-to-head ELO[^3] | **1638** | 1451 |
+| Win rate[^3] | **57.2%** | 40.9% |
+| Mean latency[^3] | **265ms** | 392ms |
+| Requests >500ms[^2] | **2.7%** | 14.3% |
+| Price / 1M tokens[^5] | **$0.025** | $0.050 |
+
+[^1]: [ZeroEntropy Raises $4.2M Seed Round to Make AI Retrieval Truly Intelligent](https://zeroentropy.dev/articles/zeroentropy-raises-4-2m-seed-round-to-make-ai-retrieval-truly-intelligent)
+[^2]: [ZeroEntropy Rerankers — benchmarks and tail-latency data](https://zeroentropy.dev/rerankers)
+[^3]: [Agentset (independent): zerank-2 vs Cohere Rerank 3.5](https://agentset.ai/rerankers/compare/zerank-2-vs-cohere-rerank-35)
+[^4]: [Introducing zembed-1 — multilingual embedding benchmarks and open weights](https://zeroentropy.dev/articles/introducing-zembed-1-the-worlds-best-multilingual-text-embedding-model)
+[^5]: [ZeroEntropy Pricing](https://zeroentropy.dev/pricing/)
+[^6]: [How Assembled Powers High-Quality AI Customer Support with ZeroEntropy](https://zeroentropy.dev/articles/how-assembled-powers-high-quality-ai-customer-support-with-zeroentropy)
+[^7]: [How Vera Health Achieved State-of-the-Art Clinical Accuracy](https://zeroentropy.dev/articles/how-vera-health-achieved-state-of-the-art-clinical-accuracy-using-zeroentropy/)
+[^8]: [zeroentropy.dev — trusted in production by Assembled, Profound, Sendbird, Mem0](https://www.zeroentropy.dev)
+
+---
+
 ## ✨ What You Get
 
 ZeroEntropy's powerful engine is built for deep developer integrations, providing:
 
-* **zembed-1** — Multilingual embedding model (2560-dim default, configurable down to 40)
-* **zerank-2** — Cross-encoder reranker for boosting search precision
-* **zsearch** — End-to-end search engine with OCR, chunking, embedding, and querying
-* **Metadata filtering** — MongoDB-style filters with array prefix rules
-* **RAG pipelines** — Complete index &rarr; search &rarr; rerank &rarr; synthesize workflows
-* **Collection management** — Create, delete, and list collections
-* **Batch operations** — Index multiple documents in one call
-* **Status polling** — Check document indexing status
+- **zembed-1** — Multilingual embedding model (2560-dim default, configurable down to 40)
+- **zerank-2** — Cross-encoder reranker for boosting search precision
+- **zsearch** — End-to-end search engine with OCR, chunking, embedding, and querying
+- **Metadata filtering** — MongoDB-style filters with array prefix rules
+- **RAG pipelines** — Complete index &rarr; search &rarr; rerank &rarr; synthesize workflows
+- **Collection management** — Create, delete, and list collections
+- **Batch operations** — Index multiple documents in one call
+- **Status polling** — Check document indexing status
 
 ---
 
@@ -277,10 +309,10 @@ zeroentropy-skill/
 
 This is a documentation-first skill that agents can discover directly from `SKILL.md`, with tagged release artifacts available for pinned installs and human review.
 
-* **Skill distribution:** Via `git clone` or `npx skills add`
-* **Plugin distribution:** Built locally from source after skill install, or from the packaged release tarball
-* **Versioning:** Semantic versioning in `skill.json` and `CHANGELOG.md`
-* **Release assets:** `SKILL.md`, `skill.json`, `README.md`, and `zeroentropy-skill-v1.1.6.tar.gz`
+- **Skill distribution:** Via `git clone` or `npx skills add`
+- **Plugin distribution:** Built locally from source after skill install, or from the packaged release tarball
+- **Versioning:** Semantic versioning in `skill.json` and `CHANGELOG.md`
+- **Release assets:** `SKILL.md`, `skill.json`, `README.md`, and `zeroentropy-skill-v1.1.6.tar.gz`
 
 To create the next release:
 ```bash
